@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="FF8 Selphie Slot manipulation helper." />
+    <title>FF8 Selphie Slot Manip</title>
+    <script>
+      // Resolve the saved colour scheme before first paint. Shared key, so the
+      // choice carries over from the hub. See @ff8-speedruns/ui.
+      try {
+        var s = window.localStorage.getItem('ff8-color-scheme');
+        var scheme = s === 'light' || s === 'dark' || s === 'auto' ? s : 'auto';
+        document.documentElement.setAttribute(
+          'data-mantine-color-scheme',
+          scheme !== 'auto'
+            ? scheme
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light',
+        );
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/slot-calculator/assets/index-D8uTLSez.js"></script>
+    <link rel="stylesheet" crossorigin href="/slot-calculator/assets/index-HkxHTAwJ.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
