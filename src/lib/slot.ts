@@ -35,7 +35,6 @@ import type {
   Match,
   Observation,
   OpeningCrisis,
-  OpeningGuide,
   OpeningRoute,
   OpeningRoutes,
   Party,
@@ -45,7 +44,6 @@ import type {
   Roll,
   Statuses,
   Target,
-  WatchEntry,
 } from './types.ts';
 
 /** The random table's length, and so the length of the whole manip cycle. */
@@ -62,13 +60,6 @@ export const SHOW_CAST_COUNTS = false;
 
 /** A Do Over advances the RNG index by this much. */
 export const DO_OVER_STEP = 4;
-
-/**
- * How far openingGuide will look for a reading depth that separates every
- * useful opening from every dead one. Three is enough at every party state
- * tested; the cap only stops a pathological case from scanning forever.
- */
-const MAX_SETTLE_DEPTH = 8;
 
 /** Crisis levels the Limit Break can open at. 0 means it is not available. */
 const MAX_CRISIS = 4 satisfies Crisis;
@@ -201,6 +192,37 @@ export function spellAt(index: number, level: number, crisis: Crisis): Roll {
   };
 }
 
+/** Does this roll satisfy the target? `casts` of 0 accepts any count. */
+const matchesTarget = (roll: Roll, { spell, casts = 0 }: Target): boolean =>
+  roll.spell === spell && (!casts || roll.casts === casts);
+
+/**
+ * A run of consecutive Do Overs from one state, in order.
+ *
+ * Every reading sequence in this file is this same walk: the path to a target,
+ * the signature that identifies an opening, the run a capture recorded. Writing
+ * it once means the step arithmetic can only be wrong in one place.
+ */
+const rollsFrom = (index: number, level: number, crisis: Crisis, depth: number): Roll[] =>
+  Array.from({ length: depth }, (_, step) => spellAt(index + DO_OVER_STEP * step, level, crisis));
+
+/**
+ * Every index the Limit Break can open at, with the crisis it would roll there.
+ *
+ * The single most repeated question in this file. `hpOutlook` still counts
+ * inline: it asks this once per sampled HP, and building a fresh list a couple
+ * of hundred times over is the one place the helper would cost more than the
+ * duplication it removes.
+ */
+export function liveOpenings(party: Party): State[] {
+  const out: State[] = [];
+  for (let index = 0; index < CYCLE; index += 1) {
+    const crisis = crisisAtOpen(index, party);
+    if (crisis) out.push({ index, crisis });
+  }
+  return out;
+}
+
 /** Every index in the cycle for one level and one open crisis level. */
 export function rollCycle(level: number, crisis: Crisis): Roll[] {
   return Array.from({ length: CYCLE }, (_, index) => spellAt(index, level, crisis));
@@ -236,7 +258,7 @@ export function findSpell(
   { spell, casts = 0, from = 0 }: Target & { from?: number },
 ): Hit[] {
   return rollCycle(level, crisis)
-    .filter((roll) => roll.spell === spell && (!casts || roll.casts === casts))
+    .filter((roll) => matchesTarget(roll, { spell, casts }))
     .map((roll) => {
       const plan = planTo(from, roll.index);
       return { ...roll, plan, reachable: plan.skips === 0 };
@@ -314,7 +336,7 @@ export function doOversTo(
 ): (Roll & { doOvers: number }) | null {
   for (let step = 0; step < CYCLE / DO_OVER_STEP; step += 1) {
     const roll = spellAt(wrapIndex(index + DO_OVER_STEP * step), level, crisis);
-    if (roll.spell === spell && (!casts || roll.casts === casts)) return { doOvers: step, ...roll };
+    if (matchesTarget(roll, { spell, casts })) return { doOvers: step, ...roll };
   }
   return null;
 }
@@ -335,9 +357,7 @@ export function doOverPath(
 ): Roll[] | null {
   const hit = doOversTo(level, index, crisis, target);
   if (!hit) return null;
-  return Array.from({ length: hit.doOvers + 1 }, (_, step) =>
-    spellAt(index + DO_OVER_STEP * step, level, crisis),
-  );
+  return rollsFrom(index, level, crisis, hit.doOvers + 1);
 }
 
 /**
@@ -396,116 +416,6 @@ export function reopenOutlook(party: Party, { spell, casts = 0 }: Target): Reope
 }
 
 /**
- * What to look for when the Limit Break comes back.
- *
- * `watchFor` is the shortcut: the first readings that appear at a useful
- * opening. It is a whitelist, so anything not on it is a dead opening and the
- * turn can be passed again.
- *
- * A reading on the list marked `decisive` appears at no dead opening, so seeing
- * it means stop. The rest are shared with a dead opening and need `settleDepth`
- * readings to separate, which is computed here rather than assumed.
- *
- * The list grows with how common the spell is, making it less of a shortcut
- * That is fine: a spell on most openings has a short wait anyway. The
- * caller decides when the list is too long to be worth showing.
- */
-export function openingGuide(party: Party, { spell, casts = 0 }: Target): OpeningGuide {
-  const { level } = party;
-  const useful: State[] = [];
-  const dead: State[] = [];
-  for (let index = 0; index < CYCLE; index += 1) {
-    const crisis = crisisAtOpen(index, party);
-    if (!crisis) continue;
-    (doOversTo(level, index, crisis, { spell, casts }) ? useful : dead).push({ index, crisis });
-  }
-
-  // Two different questions, so two different signatures.
-  //
-  // The watch list is something a runner LOOKS at, and the cast count is right
-  // there on the screen next to the spell, so naming it makes the list sharper.
-  //
-  // settleDepth is a promise about what they can TYPE into the reader, and the
-  // reader only takes cast counts when SHOW_CAST_COUNTS is on. Promising that
-  // two readings settle it, when two readings without counts do not, would send
-  // a runner off on a state the tool cannot actually pin.
-  const signature = ({ index, crisis }: State, depth: number, withCasts: boolean): string =>
-    Array.from({ length: depth }, (_, step) => {
-      const roll = spellAt(wrapIndex(index + DO_OVER_STEP * step), level, crisis);
-      return withCasts ? `${roll.spell} ×${roll.casts}` : roll.spell;
-    }).join(', ');
-
-  const deadFirst = new Set(dead.map((opening) => signature(opening, 1, true)));
-
-  // What the reader can actually pin, which is a different question. The list
-  // names cast counts because they sit on screen next to the spell, but with
-  // SHOW_CAST_COUNTS off the reader only takes the name, so a reading whose bare
-  // name is shared with another live opening will not settle on one state
-  // however decisive it looks on the card.
-  const liveByName = new Map<string, number>();
-  for (const opening of [...useful, ...dead]) {
-    const name = signature(opening, 1, false);
-    liveByName.set(name, (liveByName.get(name) ?? 0) + 1);
-  }
-
-  // Weighted by how many useful openings each reading covers, so the list is
-  // ordered by what a runner is most likely to actually see.
-  const weight = new Map<string, { openings: number; spell: string; casts: Casts }>();
-  for (const opening of useful) {
-    const first = signature(opening, 1, true);
-    const seen = weight.get(first);
-    if (seen) seen.openings += 1;
-    else {
-      // A depth-1 signature is exactly this roll, so its parts come straight off
-      // the roll rather than being formatted and then parsed back out.
-      const roll = spellAt(opening.index, level, opening.crisis);
-      weight.set(first, { openings: 1, spell: roll.spell, casts: roll.casts });
-    }
-  }
-
-  const watchFor = [...weight.entries()]
-    .map<WatchEntry>(([reading, { openings, spell: name, casts }]) => ({
-      reading,
-      spell: name,
-      casts,
-      openings,
-      decisive: !deadFirst.has(reading),
-      pins: SHOW_CAST_COUNTS
-        ? openings === 1 && !deadFirst.has(reading)
-        : liveByName.get(name) === 1,
-    }))
-    .sort(
-      (a, b) =>
-        Number(b.decisive) - Number(a.decisive) ||
-        b.openings - a.openings ||
-        a.reading.localeCompare(b.reading),
-    );
-
-  const onList = new Set(watchFor.map((entry) => entry.reading));
-  const rulesOut = dead.filter((opening) => !onList.has(signature(opening, 1, true))).length;
-
-  // The fewest readings that separate every useful opening from every dead one.
-  // The card promises this is enough, so it is measured rather than asserted.
-  let settleDepth: number | null = null;
-  for (let depth = 1; depth <= MAX_SETTLE_DEPTH; depth += 1) {
-    const deadAtDepth = new Set(dead.map((opening) => signature(opening, depth, SHOW_CAST_COUNTS)));
-    if (useful.every((opening) => !deadAtDepth.has(signature(opening, depth, SHOW_CAST_COUNTS)))) {
-      settleDepth = depth;
-      break;
-    }
-  }
-
-  return {
-    useful: useful.length,
-    dead: dead.length,
-    watchFor,
-    rulesOut,
-    decisive: watchFor.filter((entry) => entry.decisive).length,
-    settleDepth,
-  };
-}
-
-/**
  * Every opening that reaches the target, with the readings that identify it and
  * the Do-Overs owed once they have been seen.
  *
@@ -541,16 +451,21 @@ export function openingRoutes(
   const { level } = party;
   const target = { spell, casts };
 
-  const live: State[] = [];
-  for (let index = 0; index < CYCLE; index += 1) {
-    const crisis = crisisAtOpen(index, party);
-    if (crisis) live.push({ index, crisis });
-  }
+  // Reachability depends only on the residue class and the crisis, never on the
+  // index itself, so the 16-cell table answers it for every opening at a fixed
+  // cost. Asking doOversTo per opening instead walked up to 64 indices each,
+  // about 8,000 rolls at a typical party state to compute 125 booleans.
+  const reachable = reachTable(level, target);
 
-  const readingsOf = ({ index, crisis }: State, depth: number): Roll[] =>
-    Array.from({ length: depth }, (_, step) => spellAt(index + DO_OVER_STEP * step, level, crisis));
-  const keyOf = (state: State, depth: number): string =>
-    readingsOf(state, depth)
+  // Each opening is walked to the deepest depth once. Every shallower signature
+  // is a prefix of that run, so no index is rolled twice.
+  const walked = liveOpenings(party).map((state) => ({
+    state,
+    readings: rollsFrom(state.index, level, state.crisis, maxDepth),
+  }));
+  const keyOf = (readings: readonly Roll[], depth: number): string =>
+    readings
+      .slice(0, depth)
       .map((roll) => roll.spell)
       .join(',');
 
@@ -559,8 +474,8 @@ export function openingRoutes(
   const shared: Map<string, number>[] = [];
   for (let depth = 1; depth <= maxDepth; depth += 1) {
     const counts = new Map<string, number>();
-    for (const state of live) {
-      const key = keyOf(state, depth);
+    for (const { readings } of walked) {
+      const key = keyOf(readings, depth);
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     shared.push(counts);
@@ -570,15 +485,15 @@ export function openingRoutes(
   let unresolved = 0;
   let dead = 0;
 
-  for (const state of live) {
-    if (!doOversTo(level, state.index, state.crisis, target)) {
+  for (const { state, readings } of walked) {
+    if (!reaches(reachable, state.index, state.crisis)) {
       dead += 1;
       continue;
     }
 
     let depth: number | null = null;
     for (let tryDepth = 1; tryDepth <= maxDepth; tryDepth += 1) {
-      if (at(shared, tryDepth - 1).get(keyOf(state, tryDepth)) === 1) {
+      if (at(shared, tryDepth - 1).get(keyOf(readings, tryDepth)) === 1) {
         depth = tryDepth;
         break;
       }
@@ -597,7 +512,7 @@ export function openingRoutes(
     routes.push({
       index: state.index,
       crisis: state.crisis,
-      readings: readingsOf(state, depth),
+      readings: readings.slice(0, depth),
       doOvers: from.doOvers,
     });
   }
@@ -608,7 +523,17 @@ export function openingRoutes(
     (a, b) => a.readings.length - b.readings.length || a.doOvers - b.doOvers || a.index - b.index,
   );
 
-  return { routes, unresolved, dead, live: live.length };
+  return {
+    routes,
+    unresolved,
+    dead,
+    live: walked.length,
+    // Whether the list accounts for every opening that reaches the target, and
+    // so whether a caller may tell a runner that anything unlisted is safe to
+    // pass. A property of this result, not of a caller's layout choices, so it
+    // is settled here instead of being re-derived at each call site.
+    complete: unresolved === 0,
+  };
 }
 
 /**

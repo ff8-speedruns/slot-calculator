@@ -160,24 +160,6 @@ export interface ReopenOutlook {
   possible: boolean;
 }
 
-/** One entry in the opening watch list. */
-export interface WatchEntry {
-  reading: string;
-  /** The spell name alone, which is what the reader accepts as an observation. */
-  spell: string;
-  /** The count shown beside it. Only typeable while SHOW_CAST_COUNTS is on. */
-  casts: Casts;
-  openings: number;
-  /** No dead opening shows this same reading, cast count included. */
-  decisive: boolean;
-  /**
-   * The reader settles on exactly one state from this reading alone. Weaker than
-   * `decisive` whenever the cast count is part of the label but not part of what
-   * can be typed, which is the case while SHOW_CAST_COUNTS is off.
-   */
-  pins: boolean;
-}
-
 /**
  * One opening, the readings that identify it, and what it costs from there.
  *
@@ -201,16 +183,12 @@ export interface OpeningRoutes {
   /** Live openings that cannot reach the target at all. */
   dead: number;
   live: number;
-}
-
-/** What to look for when the Limit Break comes back. */
-export interface OpeningGuide {
-  useful: number;
-  dead: number;
-  watchFor: WatchEntry[];
-  rulesOut: number;
-  decisive: number;
-  settleDepth: number | null;
+  /**
+   * True when `routes` accounts for every opening that reaches the target, so
+   * anything unlisted can be passed. False means `unresolved` openings work but
+   * could not be named, and a caller must not present the list as exhaustive.
+   */
+  complete: boolean;
 }
 
 /** How the odds for one target change with HP. */

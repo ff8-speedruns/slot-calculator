@@ -32,7 +32,7 @@ const toneOf = (route: OpeningRoute) =>
  * name, so seeding them settles the reading on this exact opening, which is what
  * makes the plan card below agree with the row that was clicked.
  */
-function Route({
+function OpeningRow({
   route,
   onPickReading,
 }: {
@@ -76,8 +76,8 @@ function Route({
  *
  * There is no "too common" case here any more: App decides between this panel
  * and the reader, and only renders this one when the list is short enough to
- * scan AND complete. That is what lets the copy below say plainly that anything
- * unlisted can be passed.
+ * scan. Whether the list is exhaustive is a separate question, and the copy
+ * below asks `complete` rather than assuming App checked it.
  */
 function Tell({
   guide,
@@ -88,7 +88,7 @@ function Tell({
   spell: string;
   onPickReading: (readings: readonly Roll[]) => void;
 }) {
-  const { routes, dead, live } = guide;
+  const { routes, dead, live, complete } = guide;
 
   if (routes.length === 0) {
     return (
@@ -109,7 +109,7 @@ function Tell({
     <>
       <Stack component="ul" gap={2} className={styles.badges}>
         {routes.map((route) => (
-          <Route
+          <OpeningRow
             key={`${route.index}/${route.crisis}`}
             route={route}
             onPickReading={onPickReading}
@@ -117,9 +117,16 @@ function Tell({
         ))}
       </Stack>
 
-      <Text size="sm" fw={600}>
-        Anything else, do an ATB/turn refresh.
-      </Text>
+      {/*
+        Only sound on a complete list. App picks the reader instead when the list
+        is incomplete, but this panel is the thing making the claim, so it reads
+        the verdict itself rather than trusting a condition it cannot see.
+      */}
+      {complete && (
+        <Text size="sm" fw={600}>
+          Anything else, do an ATB/turn refresh.
+        </Text>
+      )}
       <Text size="xs" c="dimmed">
         {routes.length} of {live} openings reach <Code>{spell}</Code>, ruling out {dead} dead ones.
         The count is the Do Overs owed once every spell on that row has shown. Cast counts confirm a

@@ -81,12 +81,13 @@ export default function App() {
     handleReadFromOpeningChange,
   } = useSlotReading(party, target, offset);
 
-  // Walks all 256 indices and recomputes on any keystroke, so leaving it bare
-  // would redo roughly a thousand lookups per character typed.
+  // Walks all 256 indices, so it is memoised. `from` is deliberately left off:
+  // it exists to price each hit's plan, which nothing renders any more, and
+  // passing `current` re-walked the whole cycle every time the offset moved or
+  // the reading resolved, for a value only ever read as a count.
   const hits = useMemo(
-    () =>
-      crisis === null ? [] : findSpell(party.level, crisis, { ...target, from: current ?? 0 }),
-    [party.level, crisis, target, current],
+    () => (crisis === null ? [] : findSpell(party.level, crisis, target)),
+    [party.level, crisis, target],
   );
   const availability = useMemo(() => spellAvailability(party), [party]);
 
@@ -100,12 +101,12 @@ export default function App() {
    * ever useful. The opening list is the better answer when it is short enough to
    * scan AND complete; otherwise the runner has to read the Slot instead.
    *
-   * `unresolved` is what makes completeness part of the test. Those openings do
-   * reach the target but cannot be named, so with them present the list cannot
-   * claim that anything unlisted is safe to pass, and the reader has to be there
-   * to settle them.
+   * Completeness is the other half of the test, and it is the routes' own verdict
+   * rather than a rule restated here: an incomplete list has openings that work
+   * but cannot be named, so it cannot claim anything unlisted is safe to pass,
+   * and the reader has to be there to settle them.
    */
-  const readInstead = routes.routes.length > ROUTES_MAX || routes.unresolved > 0;
+  const readInstead = routes.routes.length > ROUTES_MAX || !routes.complete;
 
   const handleSpellChange = (next: string | null) => setSpell(next ?? DEFAULT_SPELL);
   const handleCastsChange = (next: string | null) => setCasts((Number(next) || 0) as CastFilter);

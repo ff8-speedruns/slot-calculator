@@ -18,7 +18,6 @@ import type { Casts, CastFilter, Crisis, Observation, Party, Reading } from './t
 import { RNG_TABLE, SLOT_ARRAY } from './slot.data.ts';
 import {
   CRISIS_LEVELS,
-  SHOW_CAST_COUNTS,
   CYCLE,
   DO_OVER_STEP,
   SPELLS,
@@ -27,7 +26,6 @@ import {
   doOverPath,
   doOversTo,
   hpOutlook,
-  openingGuide,
   openingRoutes,
   reopenOutlook,
   spellAvailability,
@@ -311,8 +309,9 @@ assert.ok(
 // ---------------------------------------------------------------- the planner
 //
 // findSpell reports how far each hit is and whether Do Overs alone can reach it.
-// Its answers are what the map and the hit table draw, so they have to agree
-// with a plain walk of the residue class.
+// All that survives of it on screen is the count of indices showing the target,
+// but the plan rests on the same residue-class reasoning, so it is held to a
+// plain walk of that class.
 for (const party of [ANY_PERCENT, FIELD]) {
   for (const crisis of CRISIS_LEVELS) {
     for (const spell of ['Cure', 'Wall', 'The End']) {
@@ -1013,72 +1012,6 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
   );
 }
 
-// ------------------------- why the watch list has two colours, not three
-//
-// `decisive` and `pins` look like two grades of good news. They are not, while
-// SHOW_CAST_COUNTS is off: `decisive` is computed on the reading WITH its cast
-// count, but the reader only accepts the name, so a decisive-but-unpinning
-// reading resolves to a set that still holds dead openings. The card therefore
-// colours on `pins` alone.
-//
-// Both halves of that are measured. If either flipped, the card's two-colour key
-// would be understating what it knows and the third colour should come back.
-{
-  let pinning = 0;
-  let unpinning = 0;
-  let unpinningWithADeadCandidate = 0;
-  let resolvedNow = 0;
-
-  for (const party of [ANY_PERCENT, ODIN, FIELD]) {
-    for (const spell of SPELLS) {
-      if (!reopenOutlook(party, { spell }).possible) continue;
-      const guide = openingGuide(party, { spell });
-      if (guide.watchFor.length > 12) continue;
-
-      for (const entry of guide.watchFor) {
-        // Whatever the reader can actually be told, which is the name alone here.
-        const typed: Observation[] = [
-          { spell: entry.spell, casts: SHOW_CAST_COUNTS ? entry.casts : 0 },
-        ];
-        const found = identify(party.level, typed, { party, scope: 'opening' });
-        const presses = found.matches.map(
-          (match) =>
-            doOversTo(party.level, match.current, match.crisis, { spell })?.doOvers ?? null,
-        );
-
-        if (entry.pins) {
-          pinning += 1;
-          // A pinning reading is the one case that needs nothing further: one
-          // state, and a route from it. That is what earns the filled colour.
-          assert.equal(found.matches.length, 1, `${entry.reading} claims to pin but did not`);
-          assert.ok(entry.decisive, `${entry.reading} pins without being decisive`);
-          assert.ok(
-            presses.every((count) => count !== null),
-            'a pinning reading must have a route',
-          );
-          resolvedNow += 1;
-          continue;
-        }
-
-        unpinning += 1;
-        // Everything else needs at least one more reading, decisive or not.
-        assert.ok(
-          found.matches.length > 1,
-          `${entry.reading} does not pin yet resolved to one state`,
-        );
-        if (presses.some((count) => count === null)) unpinningWithADeadCandidate += 1;
-      }
-    }
-  }
-
-  assert.ok(pinning > 0 && unpinning > 0, 'both colours must actually occur');
-  assert.equal(resolvedNow, pinning, 'every pinning reading resolves immediately');
-  assert.ok(
-    unpinningWithADeadCandidate > 0,
-    'no unpinning reading admits a dead opening any more, so decisive would be worth its own colour again',
-  );
-}
-
 // ---------------------------------------- the whole plan, up front
 //
 // A runner acts on these rows without typing anything, so every column has to
@@ -1378,187 +1311,6 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
   );
   assert.equal(must(atEight.get('Aero'), 'Aero missing at level 8').state, 'level');
   assert.equal(must(atEleven.get('Aero'), 'Aero missing at level 11').state, 'hp');
-}
-
-// ------------------------------------------ recognising a useful opening
-//
-// A skip cannot be steered, so the tool cannot say which opening you will get.
-// What it can say is which openings are worth stopping at, and that turns the
-// expensive part of starting over, typing four spells for every dead opening,
-// into a glance at the first one.
-//
-// Everything the card claims here is checked against a per-opening walk rather
-// than against the table that produced the claim.
-{
-  // The watch list names cast counts because a runner can see them on screen.
-  // settleDepth promises what they can type, and the reader only takes counts
-  // when SHOW_CAST_COUNTS is on, so the two are checked against different keys.
-  const firstReading = (index: number, crisis: Crisis, level: number): string => {
-    const roll = spellAt(index, level, crisis);
-    return `${roll.spell} ×${roll.casts}`;
-  };
-  const typedReading = (index: number, crisis: Crisis, level: number): string => {
-    const roll = spellAt(index, level, crisis);
-    return SHOW_CAST_COUNTS ? `${roll.spell} ×${roll.casts}` : roll.spell;
-  };
-
-  for (const party of [ANY_PERCENT, ODIN, FIELD]) {
-    for (const spell of ['The End', 'Ultima', 'Meteor', 'Wall', 'Cure']) {
-      const outlook = reopenOutlook(party, { spell });
-      if (!outlook.possible) continue;
-      const guide = openingGuide(party, { spell });
-
-      assert.equal(guide.useful, outlook.good, `useful count disagrees for ${spell}`);
-      assert.equal(guide.useful + guide.dead, outlook.live, 'useful and dead must partition live');
-
-      // Rebuild the whitelist the slow way.
-      const usefulFirst = new Map();
-      const deadFirst = new Set();
-      for (let index = 0; index < CYCLE; index += 1) {
-        const crisis = crisisAtOpen(index, party);
-        if (!crisis) continue;
-        const first = firstReading(index, crisis, party.level);
-        if (doOversTo(party.level, index, crisis, { spell })) {
-          usefulFirst.set(first, (usefulFirst.get(first) ?? 0) + 1);
-        } else {
-          deadFirst.add(first);
-        }
-      }
-
-      // `decisive` is about what a runner can SEE, cast count included. `pins` is
-      // about what the reader can be TOLD, which is the spell name alone while
-      // SHOW_CAST_COUNTS is off, so it is the weaker claim and it is checked
-      // against what identify actually does rather than against itself.
-      for (const entry of guide.watchFor) {
-        // The label is built from these, so they have to agree with it.
-        assert.equal(
-          `${entry.spell} ×${entry.casts}`,
-          entry.reading,
-          'watch entry parts disagree with its label',
-        );
-        const typed: Observation[] = [
-          { spell: entry.spell, casts: SHOW_CAST_COUNTS ? entry.casts : 0 },
-        ];
-        assert.equal(
-          entry.pins,
-          identify(party.level, typed, { party }).matches.length === 1,
-          `pins disagrees with the reader for ${entry.reading} at level ${party.level}`,
-        );
-        if (entry.pins) {
-          assert.ok(entry.decisive, `${entry.reading} pins but is not marked decisive`);
-        }
-      }
-
-      assert.deepEqual(
-        guide.watchFor.map((entry) => entry.reading).sort(),
-        [...usefulFirst.keys()].sort(),
-        `the watch list is not the set of useful first readings for ${spell}`,
-      );
-
-      for (const entry of guide.watchFor) {
-        assert.equal(entry.openings, usefulFirst.get(entry.reading), 'weight is wrong');
-        assert.equal(entry.decisive, !deadFirst.has(entry.reading), 'decisive flag is wrong');
-      }
-
-      // Decisive first: the list is read top down and the useful half has to
-      // come first or the ordering is worse than useless.
-      const firstNonDecisive = guide.watchFor.findIndex((entry) => !entry.decisive);
-      if (firstNonDecisive !== -1) {
-        assert.ok(
-          guide.watchFor.slice(firstNonDecisive).every((entry) => !entry.decisive),
-          'decisive entries must sort ahead of the rest',
-        );
-      }
-      assert.equal(guide.decisive, guide.watchFor.filter((e) => e.decisive).length);
-
-      // The claim the runner acts on: anything off the list is a dead opening.
-      // Count the dead openings the whitelist rules out, and separately assert
-      // that no useful opening is ever ruled out by it.
-      let ruledOut = 0;
-      for (let index = 0; index < CYCLE; index += 1) {
-        const crisis = crisisAtOpen(index, party);
-        if (!crisis) continue;
-        const onList = usefulFirst.has(firstReading(index, crisis, party.level));
-        const isUseful = Boolean(doOversTo(party.level, index, crisis, { spell }));
-        assert.ok(!isUseful || onList, 'a useful opening must never be ruled out by the list');
-        if (!isUseful && !onList) ruledOut += 1;
-      }
-      assert.equal(guide.rulesOut, ruledOut, `rulesOut is wrong for ${spell}`);
-
-      // settleDepth is promised as enough. Verify it separates every pair, and
-      // that it is the smallest such depth rather than a safe overestimate.
-      assert.ok(guide.settleDepth !== null, `no settle depth found for ${spell}`);
-      const signature = (index: number, crisis: Crisis, depth: number): string =>
-        Array.from({ length: depth }, (_, step) =>
-          typedReading(wrapIndex(index + DO_OVER_STEP * step), crisis, party.level),
-        ).join(', ');
-      for (const depth of [guide.settleDepth, guide.settleDepth - 1]) {
-        if (depth < 1) continue;
-        const dead = new Set();
-        const useful = new Set();
-        for (let index = 0; index < CYCLE; index += 1) {
-          const crisis = crisisAtOpen(index, party);
-          if (!crisis) continue;
-          const sig = signature(index, crisis, depth);
-          if (doOversTo(party.level, index, crisis, { spell })) useful.add(sig);
-          else dead.add(sig);
-        }
-        const separated = [...useful].every((sig) => !dead.has(sig));
-        if (depth === guide.settleDepth) {
-          assert.ok(separated, `${depth} readings do not actually settle ${spell}`);
-        } else {
-          assert.ok(!separated, `settleDepth ${guide.settleDepth} is one more than needed`);
-        }
-      }
-    }
-  }
-
-  // The captured party state, as plain numbers a reader can check against the
-  // card. Six first readings, three of them decisive, ruling out 71 of 92.
-  const end = openingGuide(FIELD, { spell: 'The End' });
-  assert.equal(end.useful, 6);
-  assert.equal(end.dead, 92);
-  assert.equal(end.watchFor.length, 6);
-  assert.equal(end.decisive, 3);
-  assert.equal(end.rulesOut, 71);
-  // Three on names alone, which is what the reader takes while cast counts are
-  // hidden. With counts on it would be three here too, but Ultima at this party
-  // state drops to two, so the number is not a constant of the spell.
-  assert.equal(end.settleDepth, 3);
-  assert.deepEqual(
-    end.watchFor.filter((entry) => entry.decisive).map((entry) => entry.reading),
-    ['Sleep ×2', 'The End ×1', 'Thundaga ×1'],
-  );
-
-  // The tell is only sound on the OPENING reading, and the panel says so. That
-  // caveat has to be load-bearing rather than decorative, so prove it: after a
-  // single Do Over there is a useful opening whose reading is not on the list,
-  // which means a runner applying the list late would pass a turn that was
-  // about to work.
-  {
-    const party = FIELD;
-    const want = { spell: 'The End' };
-    const onList = new Set(openingGuide(party, want).watchFor.map((entry) => entry.reading));
-    let misledAfterOneDoOver = 0;
-    for (let index = 0; index < CYCLE; index += 1) {
-      const crisis = crisisAtOpen(index, party);
-      if (!crisis || !doOversTo(party.level, index, crisis, want)) continue;
-      const moved = spellAt(wrapIndex(index + DO_OVER_STEP), party.level, crisis);
-      if (!onList.has(`${moved.spell} ×${moved.casts}`)) misledAfterOneDoOver += 1;
-    }
-    assert.ok(
-      misledAfterOneDoOver > 0,
-      'if the list still held after a Do Over the panel would not need its caveat',
-    );
-  }
-
-  // A spell on most openings has no useful shortcut, and the card says so
-  // rather than printing forty pills. That is a rendering decision, but the
-  // list length it keys off is not, so it is anchored here.
-  assert.ok(
-    openingGuide(FIELD, { spell: 'Thundaga' }).watchFor.length > 12,
-    'Thundaga should be too common for a watch list',
-  );
 }
 
 // ------------------------------------------------ the HP the card names
