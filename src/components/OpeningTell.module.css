@@ -1,0 +1,32 @@
+.badges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.badge {
+  text-transform: none;
+}
+
+/*
+ * The whole row is the control. Mantine's UnstyledButton resets text-align and
+ * width at single-class specificity and its stylesheet loads after this module,
+ * so the selector is doubled to win those back.
+ */
+.row.row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 3px 4px;
+  border-radius: var(--mantine-radius-sm);
+  cursor: pointer;
+}
+
+.row.row:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.row.row:focus-visible {
+  outline: 2px solid var(--mantine-color-blue-5);
+  outline-offset: -2px;
+}

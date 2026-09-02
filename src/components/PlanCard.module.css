@@ -1,0 +1,34 @@
+.good {
+  background: linear-gradient(
+    -60deg,
+    var(--mantine-color-teal-5) 0%,
+    var(--mantine-color-teal-8) 100%
+  );
+}
+
+.retry {
+  background: linear-gradient(
+    -60deg,
+    var(--mantine-color-orange-6) 0%,
+    var(--mantine-color-orange-9) 100%
+  );
+}
+
+.dead {
+  background: linear-gradient(
+    -60deg,
+    var(--mantine-color-gray-6) 0%,
+    var(--mantine-color-dark-6) 100%
+  );
+}
+
+/*
+ * A route can be up to 63 presses. Every line stays in the DOM; the card scrolls
+ * rather than dropping any of them, because a runner reads this one line per
+ * Do-Over and a missing line is a wrong instruction.
+ */
+.route {
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+}

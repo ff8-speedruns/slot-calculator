@@ -11,13 +11,6 @@ export default defineConfig({
   // Two copies of React breaks every hook, and two copies of Mantine means the
   // provider's context is invisible to this app's components. Force one each.
   resolve: {
-    dedupe: [
-      'react',
-      'react-dom',
-      '@mantine/core',
-      '@mantine/hooks',
-      '@mantine/dropzone',
-      '@tabler/icons-react',
-    ],
+    dedupe: ['react', 'react-dom', '@mantine/core', '@mantine/hooks', '@tabler/icons-react'],
   },
 });
