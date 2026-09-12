@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Anchor, Button, Checkbox, Code, Grid, Group, Select, Stack, Text } from '@mantine/core';
+import { Anchor, Button, Checkbox, Code, Grid, Group, Kbd, Select, Stack, Text } from '@mantine/core';
 import { ToolShell } from '@ff8-speedruns/ui';
 
 import {
@@ -232,7 +232,11 @@ export default function App() {
               <Panel
                 title="3. What is on screen"
                 fullHeight
-                description="Type the Slot spells you see, in order."
+                description={
+                  <>
+                    Type the Slot spells you see, in order. <Kbd>Tab</Kbd> to autocomplete.
+                  </>
+                }
                 action={
                   <Button
                     size="compact-xs"
