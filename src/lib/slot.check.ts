@@ -1083,15 +1083,20 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
         }
       }
 
-      // Rows are ordered cheapest-first: fewest readings, then shortest wait.
+      // Rows are ordered by the first spell shown, alphabetically, so the column
+      // a runner scans reads in order. Rows sharing a first spell go cheapest
+      // first: fewest readings, then shortest wait.
       for (let k = 1; k < routes.length; k += 1) {
         const previous = at(routes, k - 1);
         const current = at(routes, k);
+        const byName = at(previous.readings, 0).spell.localeCompare(at(current.readings, 0).spell);
+        assert.ok(byName <= 0, `routes are out of alphabetical order at row ${k}`);
+        if (byName !== 0) continue;
         assert.ok(
           previous.readings.length < current.readings.length ||
             (previous.readings.length === current.readings.length &&
               previous.doOvers <= current.doOvers),
-          'routes are not ordered cheapest first',
+          'routes sharing a first spell are not ordered cheapest first',
         );
       }
     }

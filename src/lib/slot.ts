@@ -512,9 +512,13 @@ export function openingRoutes(
     });
   }
 
-  // Cheapest rows first: fewest readings, then shortest wait.
+  // Ordered alphabetically
   routes.sort(
-    (a, b) => a.readings.length - b.readings.length || a.doOvers - b.doOvers || a.index - b.index,
+    (a, b) =>
+      at(a.readings, 0).spell.localeCompare(at(b.readings, 0).spell) ||
+      a.readings.length - b.readings.length ||
+      a.doOvers - b.doOvers ||
+      a.index - b.index,
   );
 
   return {
