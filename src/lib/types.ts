@@ -1,14 +1,9 @@
-/**
- * These types are the contract between slot.ts and components that draw its
- * output.
- */
+/** The contract between slot.ts and the components that draw its output. */
 
 /**
- * Crisis levels the Limit Break can open at.
- *
- * 0 is a separate idea and has its own type below, because "no Limit Break at
- * all" is not a fifth level of one. Keeping them apart means a function that
- * returns a live crisis cannot silently be handed a dead index.
+ * Crisis levels the Limit Break can open at. 0 lives in its own type below -
+ * "no Limit Break" isn't a fifth level, and keeping them apart stops a dead
+ * index getting passed where a live crisis is expected.
  */
 export type Crisis = 1 | 2 | 3 | 4;
 
@@ -73,13 +68,9 @@ export interface Match {
 }
 
 /**
- * How the candidate set was narrowed before matching.
- *
- * `opening` is the normal case: the first spell typed is the one the Limit Break
- * opened on, so the run's start index must itself be an index whose byte rolls
- * the crisis the candidate claims. `residue` is the weaker form for a reading
- * begun mid-Limit-Break, where only the residue class can be constrained. `all`
- * means no party was supplied, or the party filter had to be dropped.
+ * How the candidates were narrowed. `opening` is the normal case - the first
+ * spell typed IS the opening roll. `residue` is the weaker one for a reading
+ * started mid-Limit-Break. `all` means no party, or the filter got dropped.
  */
 export type ReadingScope = 'all' | 'opening' | 'residue';
 
@@ -88,14 +79,10 @@ export interface IdentifyOptions {
   /** Supply this and states the crisis formula forbids at this HP are dropped. */
   party?: Party;
   /**
-   * Which constraint to apply, defaulting to the tight one.
-   *
-   * This cannot be chosen automatically. `opening` and `residue` are not two
-   * guesses at one answer, they answer different questions, and only the caller
-   * knows which case the runner is in. Trying `opening` first and falling
-   * through when it finds nothing was measured and abandoned: it excludes the
-   * true state for 87% of readings begun part way into a Limit Break, and it
-   * does so silently.
+   * Which constraint to apply. Can't be picked automatically - these answer
+   * different questions and only the caller knows which the runner is in.
+   * Trying `opening` first and falling through was tried: it silently drops the
+   * true state for 87% of readings started part way in.
    */
   scope?: ReadingScope;
 }
@@ -105,19 +92,16 @@ export interface Reading {
   matches: Match[];
   ignoredCasts: boolean;
   /**
-   * What each row could still be, given every row above it. One entry per
-   * rendered row, ending with the first empty one, so the row a runner is about
-   * to fill knows its own shortlist. An empty entry means no candidate survives
-   * that far, which is a misread rather than a shortlist, and the caller should
-   * fall back to offering everything.
+   * What each row could still be, given the rows above it. One entry per row,
+   * ending with the first empty one. An empty entry means nothing survives that
+   * far (a misread), so fall back to offering the whole spell list.
    */
   options: string[][];
   /** Which constraint the surviving candidates were filtered against. */
   scope: ReadingScope;
   /**
-   * True when no state the crisis formula allows produces this reading, so the
-   * filter was dropped to keep an answer on screen. Usually means the HP in the
-   * tool is not the HP the Limit Break actually opened at.
+   * No allowed state produces this reading, so the HP filter was dropped to keep
+   * an answer on screen. Usually means the HP here isn't the HP it opened at.
    */
   droppedPartyFilter: boolean;
 }
@@ -156,17 +140,37 @@ export interface ReopenOutlook {
   live: number;
   good: number;
   crisisLevels: Crisis[];
+  /**
+   * The MEAN refresh count - a long-run average, not what you usually see. It
+   * sits well above the median, so showing only this makes a common spell look
+   * like a slog.
+   */
   expectedTurns: number;
+  /** Refreshes by which half of all attempts have it. The typical case. */
+  halfWithin: number;
+  /** Refreshes by which nine in ten have it. The bad-luck case. */
+  ninetyWithin: number;
   possible: boolean;
 }
 
 /**
+ * Where a fixed RNG cost per refresh would put you. An estimate, not a plan: it
+ * assumes every refresh moves the index the same amount, and that's the one
+ * thing here that's never held up. A skipped turn measured +7 three times, but
+ * four turns once came to +17, and 17 is prime. Every CL check spends RNG even
+ * when no Limit Break comes of it, so the real cost depends on ally ATB.
+ */
+export interface RefreshEstimate {
+  refreshes: number;
+  index: number;
+  crisis: Crisis;
+}
+
+/**
  * One opening, the readings that identify it, and what it costs from there.
- *
- * `readings` starts with the opening roll itself, so a runner watches for these
- * in order. Seeing all of them means you are at this index and crisis, and
- * `doOvers` is the count from where those readings leave you - after `readings`
- * of them the Do-Over button has been pressed one fewer time than that.
+ * `readings` starts with the opening roll, so watch for them in order. Seeing
+ * them all means you're at this index and crisis. `doOvers` counts from where
+ * they leave you, which is one fewer press than there are readings.
  */
 export interface OpeningRoute {
   index: number;
@@ -184,9 +188,9 @@ export interface OpeningRoutes {
   dead: number;
   live: number;
   /**
-   * True when `routes` accounts for every opening that reaches the target, so
-   * anything unlisted can be passed. False means `unresolved` openings work but
-   * could not be named, and a caller must not present the list as exhaustive.
+   * True when `routes` covers every opening that works, so anything unlisted can
+   * be passed. False means some `unresolved` openings work but couldn't be
+   * named - don't present the list as exhaustive.
    */
   complete: boolean;
 }

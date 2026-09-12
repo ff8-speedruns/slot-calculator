@@ -21,14 +21,17 @@ import {
   CYCLE,
   DO_OVER_STEP,
   SPELLS,
+  consecutivePrefix,
   crisisAtOpen,
   discriminator,
   doOverPath,
   doOversTo,
   hpOutlook,
   openingRoutes,
+  nextWorkingOpening,
   reopenOutlook,
   spellAvailability,
+  topSpellMatch,
   findSpell,
   identify,
   rollCycle,
@@ -69,10 +72,9 @@ for (const [index, row] of SLOT_ARRAY.entries()) {
   }
 }
 
-// Rows 60-65 are the out-of-bounds reads. The set ids they land on are the
-// first six bytes of the set block (1, 2, 4, 2, 7, 2), so each one has to be a
-// duplicate of the in-bounds row that uses the same set. This is what would
-// break first if the overflow were mis-transcribed.
+// Rows 60-65 are the out-of-bounds reads. Their set ids are the first six bytes
+// of the set block (1, 2, 4, 2, 7, 2), so each must duplicate the in-bounds row
+// using that set. First thing to break if the overflow was mis-transcribed.
 const SAME_SET_AS: readonly (readonly [number, number])[] = [
   [60, 10],
   [61, 19],
@@ -97,6 +99,16 @@ assert.deepEqual(at(at(SLOT_ARRAY, 27), 0), ['Protect', 3], 'Protect at 27/0 all
 
 assert.ok(SPELLS.includes('The End'), 'The End missing from the spell list');
 assert.ok(SPELLS.length > 40, 'spell list looks truncated');
+assert.equal(
+  at(SPELLS, 0),
+  'Fire',
+  'the menu order is the kernel slot-array order, not alphabetical',
+);
+assert.equal(
+  at(SPELLS, SPELLS.length - 1),
+  'The End',
+  'slot-array order ends on the strongest spell',
+);
 
 // Every slot index the roll can reach has data, at every level and crisis.
 for (let level = 1; level <= 100; level += 1) {
@@ -191,10 +203,9 @@ assert.equal(
   'the captures disagree about the roll they share',
 );
 
-// Reading a spell costs the Do Over that revealed it, so the index you are
-// standing on is the one the LAST reading came from. Getting this wrong
-// overstates every plan by one Do Over per extra spell typed, which is exactly
-// what a runner notices when the tool says 11 and the spell is 10 away.
+// Reading a spell costs the Do Over that revealed it, so you're standing where
+// the LAST reading came from. Get this wrong and every plan is over by one per
+// extra spell typed - the tool says 11 and the spell is 10 away.
 for (let taken = 1; taken <= CAPTURE_TWO.spells.length; taken += 1) {
   const partial = CAPTURE_TWO.spells
     .slice(0, taken)
@@ -308,10 +319,8 @@ assert.ok(
 
 // ---------------------------------------------------------------- the planner
 //
-// findSpell reports how far each hit is and whether Do Overs alone can reach it.
-// All that survives of it on screen is the count of indices showing the target,
-// but the plan rests on the same residue-class reasoning, so it is held to a
-// plain walk of that class.
+// Only the hit count reaches the screen now, but findSpell still rests on the
+// residue-class reasoning, so check it against a plain walk of that class.
 for (const party of [ANY_PERCENT, FIELD]) {
   for (const crisis of CRISIS_LEVELS) {
     for (const spell of ['Cure', 'Wall', 'The End']) {
@@ -396,11 +405,10 @@ assert.deepEqual(
 
 // ------------------------------------------ narrowing by what the HP permits
 //
-// The crisis level is rolled from the byte at the OPENING index, so most of the
-// 1,024 states cannot exist at a given HP. Searching all of them regardless is
-// what made one reading of Sleep at Lv11 349/2797 come back with 13 candidates,
-// only one of which was a live opening, and let the plan answer from whichever
-// of the impossible twelve happened to sort first.
+// Crisis is rolled from the byte at the OPENING index, so most of the 1,024
+// states can't exist at a given HP. Searching all of them is what made one
+// reading of Sleep at Lv11 349/2797 return 13 candidates with only one live,
+// and let the plan answer from whichever impossible one sorted first.
 {
   const sleep: Observation[] = [{ spell: 'Sleep', casts: 0 }];
   const wide = identify(FIELD.level, sleep);
@@ -458,13 +466,11 @@ assert.deepEqual(
     'the loose filter lost a state three Do Overs from a real opening',
   );
 
-  // Why the rung is asked for on screen rather than guessed at.
-  //
-  // A reading begun part way into a Limit Break is a state the tight rung does
-  // not contain, and the tight rung is silent about it: it returns other states
-  // that fit, or none at all. Both are wrong answers rather than absent ones.
-  // This walks every live opening and up to four Do Overs past it, and holds the
-  // two rungs to what each actually promises.
+  // Why the scope is asked for instead of guessed. A reading begun part way in
+  // isn't in the tight scope at all, and the tight scope says nothing about it -
+  // it returns other states that fit, or none. Both are wrong answers, not
+  // missing ones. Walk every live opening, four Do Overs past, and hold each
+  // scope to what it promises.
   {
     let missedByTight = 0;
     let states = 0;
@@ -509,8 +515,7 @@ assert.deepEqual(
 
   // ------------------------------------------- what the next row can still be
   //
-  // The shortlist on a row is only worth having if the true answer is always on
-  // it. Everything else about the feature is convenience; this is correctness.
+  // The shortlist is only worth having if the true answer is always on it.
   {
     // 1. The true next spell is on the shortlist, at every live opening, at
     //    every depth a runner would type.
@@ -554,15 +559,23 @@ assert.deepEqual(
             at(typed, row).spell,
         );
       }
-      const expected = [
-        ...new Set(
-          alive.map(
-            ({ index, crisis }) =>
-              spellAt(index + DO_OVER_STEP * depth, ANY_PERCENT.level, crisis).spell,
-          ),
+      const expected = new Set(
+        alive.map(
+          ({ index, crisis }) =>
+            spellAt(index + DO_OVER_STEP * depth, ANY_PERCENT.level, crisis).spell,
         ),
-      ].sort();
-      assert.deepEqual(at(options, depth), expected, `row ${depth} shortlist is wrong`);
+      );
+      const shortlist = at(options, depth);
+      assert.deepEqual(new Set(shortlist), expected, `row ${depth} shortlist is wrong`);
+
+      // Contents are one thing, order is another: the shortlist has to stay a
+      // subsequence of the menu, or the row starts ranking Confuse over Fire.
+      const ranks = shortlist.map((name) => SPELLS.indexOf(name));
+      assert.deepEqual(
+        ranks,
+        [...ranks].sort((a, b) => a - b),
+        `row ${depth} shortlist is out of slot-table order`,
+      );
     }
 
     // 3. It has to narrow, or the whole feature is decoration. Before anything
@@ -655,23 +668,18 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ------------------------------------------- captures across a turn boundary
 //
-// A second round of field captures, taken the same way: read spells until one
-// state is named, note the index, do exactly one thing, read three spells back.
-// These were never used to fit anything either.
+// A second round of field captures: read spells until one state is named, note
+// the index, do exactly one thing, read three spells back. Never used to fit
+// anything. They settle two things the model used to guess at.
 //
-// They settle two questions the model previously guessed at.
+// Backing out of the Slot menu and re-engaging is +4 with the crisis held - a Do
+// Over with extra button presses. Three captures, all +4. The proof the crisis
+// is held: two of the three landings have crisisAtOpen === 0, so a re-roll would
+// have left no Limit Break to come back to, and they read three spells off it.
 //
-// First, backing out of the Slot menu and re-engaging it is +4 with the crisis
-// held, which is to say it is a Do Over with extra button presses. Three
-// captures, all +4. The proof that the crisis is held rather than re-rolled is
-// that two of the three landings have crisisAtOpen === 0: had the game re-rolled
-// there, the runner would have found no Limit Break to come back to, and instead
-// they read three spells off it.
-//
-// Second, skipping Selphie's turn is +7, not the +1 this file used to replay.
-// Three captures, all +7, one of them with an ally casting Demi in between,
-// which cost nothing on this counter. 7 is 3 mod 4, so a skipped turn is the
-// only known move that escapes the residue class Do Overs are confined to.
+// Skipping Selphie's turn is +7, not the +1 this file used to replay. Three
+// captures, all +7, one with an ally casting Demi in between which cost nothing.
+// 7 is 3 mod 4, so a skip is the only known move that escapes the residue class.
 {
   const REENGAGE = [
     { marked: 135, held: 2 },
@@ -742,14 +750,12 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ------------------------------------------------- waiting out a failed roll
 //
-// The crisis is rolled every time Selphie's turn comes up, and the roll costs
-// RNG whether or not a Limit Break comes of it. So a turn that produces nothing
-// still moves the counter, and the question is only how long the wait is.
+// Crisis is rolled every time Selphie's turn comes up and costs RNG either way,
+// so a turn that produces nothing still moves the counter.
 //
-// It is always finite. Walk the cycle by any fixed failure step from 1 to 12,
-// from all 256 starts, at every party state: a live index always turns up. A
-// skip can cost turns but it cannot strand you, which is the assumption every
-// "start over" verdict rests on.
+// The wait is always finite: walk by any fixed step from 1 to 12, from all 256
+// starts, at every party state, and a live index always turns up. A skip costs
+// turns but can't strand you - which every "start over" verdict depends on.
 {
   const liveCount = (party: Party): number => {
     let live = 0;
@@ -782,20 +788,15 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // -------------------------------------------------------- the three verdicts
 //
-// A runner is only ever in one of three situations, and the tool has to name
-// which one without hedging.
+// A runner is only ever in one of three spots, and the tool has to pick one:
 //
-//   1. The target is in this Limit Break. Press Do Over N times. Nothing here
-//      depends on an unmeasured number, so this answer is exact.
-//   2. It is not in this one, but some opening at this HP reaches it. Start
-//      over. Which openings work is exact; how long the wait is, is a model.
-//   3. No opening at this HP reaches it, or none at this level at any HP. That
-//      is a hard no, and dressing it as a very long route is a lie.
+//   1. Target is in this Limit Break. Press Do Over N times. Exact.
+//   2. Not in this one, but some opening at this HP reaches it. Start over.
+//      Which openings work is exact; the wait is a model.
+//   3. Nothing reaches it at this HP, or at this level at all. Hard no.
 //
-// The old answer to case 2 was a multi-leg route through turn-skips, which
-// assumed the RNG cost of a turn was a constant. It is not. Predicting a landing
-// the runner will not be standing on is worse than admitting the landing is
-// unpredictable, so the route is gone from the verdict.
+// Case 2 used to be a multi-leg route through turn-skips, which assumed a turn
+// cost a constant amount of RNG. It doesn't, so the route is gone.
 {
   // Case 1 must agree with the brute-force walk of the residue class, both ways.
   for (const level of [8, 11, 34, 100]) {
@@ -871,9 +872,8 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ------------------------------------------ the spells on the way there
 //
-// The Solved panel lists what a runner will see on each press between here and
-// the target, so the two ends and the stride all have to be exact: a path one
-// short stops before the target, one long walks past it.
+// The card lists what you'll see on each press, so both ends and the stride have
+// to be exact - one short stops before the target, one long walks past it.
 {
   for (const party of [ANY_PERCENT, FIELD]) {
     for (const spell of ['The End', 'Cure', 'Wall', 'Death']) {
@@ -933,13 +933,12 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ------------------------------- why a moot tie still hides the route
 //
-// tieIsMoot says every candidate needs the same NUMBER of Do-Overs, which is why
-// the count is safe to show. It says nothing about the spells in between: tied
-// candidates sit at different crisis levels and read different rows on the way.
+// tieIsMoot only says the candidates need the same NUMBER of Do Overs, which is
+// why the count is safe to show. The spells in between can differ - tied
+// candidates sit at different crisis levels and read different rows.
 //
-// The card leans on that distinction to decide what to draw, so it is measured
-// here rather than assumed. If divergence ever fell to zero the card could list
-// the route on a tie and the suppression would be dead weight.
+// Measured, not assumed. If divergence ever hit zero the card could show the
+// route on a tie and the suppression would be dead weight.
 {
   let withRoute = 0;
   let divergent = 0;
@@ -1014,13 +1013,11 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ---------------------------------------- the whole plan, up front
 //
-// A runner acts on these rows without typing anything, so every column has to
-// be true on its own: the readings must actually appear in that order at that
-// opening, they must appear at NO other live opening, and the Do-Over count must
-// be measured from where those readings leave you rather than from the opening.
-//
-// The last one is the easy mistake. Reading n spells costs n-1 Do-Overs, so a
-// count taken from the opening index overstates the wait by exactly that much.
+// A runner acts on these rows without typing anything, so each column has to
+// stand alone: the readings appear in that order at that opening, they appear at
+// NO other live opening, and the Do Over count is measured from where those
+// readings leave you - not from the opening. That last one is the easy mistake;
+// reading n spells costs n-1 Do Overs.
 {
   for (const party of [ANY_PERCENT, ODIN, FIELD]) {
     for (const spell of ['The End', 'Ultima', 'Meteor', 'Wall', 'Cure']) {
@@ -1043,10 +1040,9 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
           assert.equal(roll.casts, expected.casts, 'route cast count is wrong');
         });
 
-        // No other live opening shows this run of NAMES. Names, not names with
-        // cast counts: a row that is only unique once the counts are read is a
-        // row that misleads anyone who glosses a digit, and a cast count is the
-        // easiest thing on that screen to get wrong.
+        // No other live opening shows this run of NAMES. Names only - a row that's
+        // unique only once you read the counts misleads anyone who glosses a
+        // digit, and the count is the easiest thing on that screen to misread.
         const mine = route.readings.map((roll) => roll.spell).join(',');
         for (let index = 0; index < CYCLE; index += 1) {
           const crisis = crisisAtOpen(index, party);
@@ -1101,11 +1097,10 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
     }
   }
 
-  // The End, the target a manip is actually run for, is fully covered in three
-  // readings at both party states, which is what makes the panel usable without
-  // typing anything. Other spells may leave some openings unresolved; that is
-  // reported rather than papered over, and the caller must not then claim an
-  // unlisted reading is safe to pass.
+  // The End is the target people actually run, and it's fully covered in three
+  // readings at both party states - that's what makes the panel usable without
+  // typing. Other spells can leave openings unresolved; that gets reported, not
+  // papered over.
   for (const party of [ANY_PERCENT, FIELD]) {
     const { unresolved, routes } = openingRoutes(party, { spell: 'The End' });
     assert.equal(unresolved, 0, 'The End should need no more than three readings');
@@ -1114,10 +1109,10 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
   assert.equal(openingRoutes(FIELD, { spell: 'The End' }).routes.length, 6);
   assert.equal(openingRoutes(ANY_PERCENT, { spell: 'The End' }).routes.length, 4);
 
-  // The two rows reported from the field as false positives. Both were unique
-  // only by cast count, and both now carry the extra reading that separates them
-  // by name: Sleep needs Blizzard (the other Sleep opening goes to Blizzara),
-  // and Full Cure/Thundara needs Blizzara (the other one goes to Cura).
+  // Two rows reported from the field as false positives. Both were unique only
+  // by cast count and now carry the reading that separates them by name: Sleep
+  // needs Blizzard (the other Sleep opening goes to Blizzara), Full Cure/Thundara
+  // needs Blizzara (the other goes to Cura).
   {
     const rows = openingRoutes(ANY_PERCENT, { spell: 'The End' }).routes;
     const named = (first: string) =>
@@ -1141,12 +1136,10 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
     );
   }
 
-  // Clicking a row loads its spells into the reader, so the row has to settle the
-  // reading on the opening it names - otherwise the plan card would disagree with
-  // the row that was clicked. Names only, since that is all the reader takes.
-  //
-  // This is the property that lets the panel be shown INSTEAD of the reader: the
-  // list is complete, and every row on it is self-identifying.
+  // Clicking a row loads its spells into the reader, so it has to settle on the
+  // opening it names or the plan card disagrees with the row you clicked. Names
+  // only, since that's all the reader takes. This is what lets the panel replace
+  // the reader entirely: the list is complete and every row identifies itself.
   for (const party of [ANY_PERCENT, FIELD]) {
     for (const spell of ['The End', 'Ultima', 'Meteor']) {
       const { routes, unresolved } = openingRoutes(party, { spell });
@@ -1177,6 +1170,115 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
     );
     assert.ok(deeper.unresolved <= shallow.unresolved, 'raising the cap must not add unresolved');
   }
+}
+
+// ------------------------------- how long the wait actually looks
+//
+// The card used to show only the mean, which sits well above the median and made
+// a common spell read as a slog. Someone who found their spell on the second
+// refresh was told to expect four and thought they'd got lucky. Two was normal.
+{
+  for (const party of [ANY_PERCENT, ODIN, FIELD]) {
+    for (const spell of SPELLS) {
+      const outlook = reopenOutlook(party, { spell });
+
+      if (!outlook.possible) {
+        assert.equal(outlook.halfWithin, Infinity, 'an impossible spell has no half-way point');
+        assert.equal(outlook.ninetyWithin, Infinity, 'nor a ninety-percent point');
+        continue;
+      }
+
+      // Ordered, and both bounded by the mean's own scale.
+      assert.ok(outlook.halfWithin >= 1, 'a wait is at least one refresh');
+      assert.ok(
+        outlook.halfWithin <= outlook.ninetyWithin,
+        `half cannot take longer than ninety for ${spell}`,
+      );
+
+      // The median never exceeds the mean for this distribution, which is the
+      // whole reason it is quoted: it is the number that is not discouraging.
+      assert.ok(
+        outlook.halfWithin <= Math.ceil(outlook.expectedTurns),
+        `median above the mean for ${spell}, so the honest number is not being shown`,
+      );
+
+      // Verify against the definition rather than the formula: the chance of
+      // still having nothing after halfWithin refreshes must be under one half.
+      const perTurn = outlook.good / CYCLE;
+      assert.ok((1 - perTurn) ** outlook.halfWithin <= 0.5, `halfWithin is too small for ${spell}`);
+      assert.ok(
+        (1 - perTurn) ** (outlook.halfWithin - 1) > 0.5,
+        `halfWithin is larger than it needs to be for ${spell}`,
+      );
+      assert.ok(
+        (1 - perTurn) ** outlook.ninetyWithin <= 0.1,
+        `ninetyWithin too small for ${spell}`,
+      );
+    }
+  }
+
+  // A spell on every opening is had on the first refresh, not the zeroth.
+  const always = reopenOutlook(ODIN, { spell: 'Cure' });
+  if (always.good === always.live && always.live === CYCLE) {
+    assert.equal(always.halfWithin, 1, 'a certainty still costs one refresh');
+  }
+}
+
+// ----------------------------- where a fixed refresh cost would land you
+//
+// It's an estimate, but what it claims still has to be exact: the index is that
+// many steps along, it's a live opening, it reaches the target, and no earlier
+// step qualifies - otherwise the count walks a runner past a working opening.
+{
+  for (const party of [ANY_PERCENT, FIELD]) {
+    for (const spell of ['The End', 'Ultima', 'Cure', 'Death']) {
+      const reachesAny = reopenOutlook(party, { spell }).possible;
+
+      for (const step of [1, 4, 7, 8, 17]) {
+        for (const from of [0, 61, 137, 179]) {
+          const found = nextWorkingOpening(party, { spell }, from, step);
+
+          if (!reachesAny) {
+            assert.equal(found, null, `${spell} is unreachable, so no walk can find it`);
+            continue;
+          }
+          if (!found) continue; // a step whose orbit misses every good opening
+
+          assert.ok(found.refreshes >= 1, 'a refresh count starts at one');
+          assert.equal(
+            found.index,
+            wrapIndex(from + step * found.refreshes),
+            'the named index is not that many steps along',
+          );
+          assert.equal(
+            crisisAtOpen(found.index, party),
+            found.crisis,
+            'the named opening does not roll that crisis',
+          );
+          assert.ok(
+            doOversTo(party.level, found.index, found.crisis, { spell }),
+            'the named opening does not reach the target',
+          );
+
+          // First, not merely any: skipping a working opening is the failure
+          // that would make a runner pass the turn that was about to pay off.
+          for (let earlier = 1; earlier < found.refreshes; earlier += 1) {
+            const index = wrapIndex(from + step * earlier);
+            const crisis = crisisAtOpen(index, party);
+            assert.ok(
+              !crisis || !doOversTo(party.level, index, crisis, { spell }),
+              `refresh ${earlier} from ${from} already worked, so ${found.refreshes} is too many`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // A step of zero or a fraction is not a walk, and must not be guessed at.
+  assert.equal(nextWorkingOpening(FIELD, { spell: 'The End' }, 0, 0), null);
+  assert.equal(nextWorkingOpening(FIELD, { spell: 'The End' }, 0, -7), null);
+  assert.equal(nextWorkingOpening(FIELD, { spell: 'The End' }, 0, 1.5), null);
 }
 
 // ------------------------------------------------------ the hard-no anchors
@@ -1222,10 +1324,9 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ----------------------------------------- what the target picker may claim
 //
-// The picker marks a spell red when it cannot appear at this level at any
-// crisis level and any HP, and amber when it exists at this level but no
-// opening the current HP can produce reaches it. Both are told to a runner as
-// facts, so both have to survive being checked the slow way.
+// Red means the spell can't appear at this level at any crisis or HP. Amber
+// means it exists but no opening at this HP reaches it. Both are shown as facts,
+// so both get checked the slow way.
 {
   for (const party of [ANY_PERCENT, ODIN, FIELD, { ...FIELD, currentHp: 700 }]) {
     const availability = spellAvailability(party);
@@ -1315,9 +1416,9 @@ assert.equal(discriminator(8, [{ index: 179, crisis: 4, current: 179 }], 1), nul
 
 // ------------------------------------------------ the HP the card names
 //
-// "Drop to 1 HP" is not advice. The card names the ceiling, the highest HP at
-// which the spell is reachable at all, and the best HP alongside it. Both are
-// printed as instructions, so both have to be HP values where it really works.
+// "Drop to 1 HP" isn't advice. The card names the ceiling - the highest HP where
+// the spell is reachable at all - plus the best HP. Both print as instructions,
+// so both have to be HP values where it actually works.
 for (const party of [ANY_PERCENT, FIELD]) {
   for (const spell of ['The End', 'Meteor', 'Wall']) {
     const outlook = hpOutlook(party, { spell });
@@ -1333,6 +1434,57 @@ for (const party of [ANY_PERCENT, FIELD]) {
     assert.ok(outlook.best.hp <= ceiling, 'the best HP cannot sit above the ceiling');
     assert.ok(outlook.best.good > 0, 'the recommended HP must reach the spell');
   }
+}
+
+// Completion. Prefix, not contains: 'f' has to reach Fira, and Mantine's default
+// contains-filter put Confuse above it. The top hit is taken on faith, so order
+// is the caller's shortlist order, which is slot-table order - so F finds Fire
+// before Fira, and the list a runner reads climbs in strength the way they do.
+assert.equal(topSpellMatch('f', SPELLS), 'Fire', 'a prefix hit beats a letter buried in Confuse');
+assert.equal(topSpellMatch('the e', SPELLS), 'The End', 'the obvious case');
+assert.equal(topSpellMatch('end', SPELLS), null, 'a match mid-name is not a match');
+assert.equal(topSpellMatch('blizz', SPELLS), 'Blizzard', 'ambiguity resolves to the top hit');
+assert.equal(
+  topSpellMatch('cur', ['Cure', 'Cura']),
+  'Cure',
+  'the given order decides, not the alphabet',
+);
+assert.equal(topSpellMatch('  ', SPELLS), 'Fire', 'nothing typed takes the top of the list');
+assert.equal(topSpellMatch('zzz', SPELLS), null, 'no hit matches nothing');
+assert.equal(topSpellMatch('f', []), null, 'an empty list has no top');
+
+// A half-typed name is not a reading. Letters on the way to a real spell must
+// leave the answer exactly where it was, or the panel churns under the typist.
+{
+  const opening = must(
+    Array.from({ length: CYCLE }, (_, index) => index).find((index) =>
+      crisisAtOpen(index, ANY_PERCENT),
+    ),
+    'no live opening for the typing check',
+  );
+  const crisis = crisisAtOpen(opening, ANY_PERCENT) as Crisis;
+  const first = spellAt(opening, ANY_PERCENT.level, crisis).spell;
+  const second = spellAt(opening + DO_OVER_STEP, ANY_PERCENT.level, crisis).spell;
+
+  const settled: Observation[] = [{ spell: first, casts: 0 }];
+  const midWord: Observation[] = [
+    { spell: first, casts: 0 },
+    { spell: second.slice(0, Math.max(1, second.length - 1)), casts: 0 },
+  ];
+  assert.equal(consecutivePrefix(midWord).length, 1, 'a part-typed row does not count as read');
+
+  const before = identify(ANY_PERCENT.level, settled, { party: ANY_PERCENT, scope: 'opening' });
+  const during = identify(ANY_PERCENT.level, midWord, { party: ANY_PERCENT, scope: 'opening' });
+  assert.deepEqual(during.matches, before.matches, 'typing a row must not move the answer');
+  assert.deepEqual(during.options, before.options, 'typing a row must not rebuild the shortlists');
+  assert.equal(during.droppedPartyFilter, false, 'a part-typed row must not drop the party filter');
+
+  // Finishing it does count, or the reader would never read anything.
+  const done: Observation[] = [
+    { spell: first, casts: 0 },
+    { spell: second, casts: 0 },
+  ];
+  assert.equal(consecutivePrefix(done).length, 2, 'a finished row counts');
 }
 
 console.log('slot tables OK');

@@ -1,9 +1,6 @@
-import { Alert, Badge, Code, Group, Text } from '@mantine/core';
+import { Alert, Badge, Group, Text } from '@mantine/core';
 
 import type { Discriminator, Match, Party, Reading } from '../lib/types.ts';
-
-/** Past this many candidates the list stops being readable and starts being wallpaper. */
-const CANDIDATES_SHOWN = 8;
 
 export interface ReadingPanelProps {
   reading: Reading;
@@ -16,26 +13,10 @@ export interface ReadingPanelProps {
   taken: number;
 }
 
-/** The candidate list, shared by the two tie states. */
-function Candidates({ matches }: { matches: readonly Match[] }) {
-  return (
-    <>
-      <Code>
-        {matches
-          .slice(0, CANDIDATES_SHOWN)
-          .map((match) => `${match.current} at crisis ${match.crisis}`)
-          .join(', ')}
-      </Code>
-      {matches.length > CANDIDATES_SHOWN && ' …'}
-    </>
-  );
-}
-
 /**
- * The reading, plus anything that has to be said about how it was solved.
- *
- * Split in two so the HP warning can sit above whichever verdict comes out
- * below it, rather than being repeated inside five early returns.
+ * The reading, plus anything worth saying about how it got solved. Split in two
+ * so the HP warning sits above whichever verdict comes out below, instead of
+ * being repeated inside five early returns.
  */
 export default function ReadingPanel(props: ReadingPanelProps) {
   const { reading, party } = props;
@@ -66,13 +47,7 @@ function ReadingResult({
 }: ReadingPanelProps) {
   const { matches, ignoredCasts } = reading;
 
-  if (!taken) {
-    return (
-      <Alert color="gray" title="Waiting on a reading">
-        Type at least one spell. 3 is usually enough, but a stubborn tie can take more.
-      </Alert>
-    );
-  }
+  if (!taken) return null;
 
   if (!matches.length) {
     return (
@@ -85,12 +60,13 @@ function ReadingResult({
 
   if (solved) {
     return (
-      <Alert color="green" title="Solved">
+      <Alert color="blue" title="Index Solved! Slot result found.">
         <Group gap="xs">
-          <Badge color="teal" variant="light">
+          You are in: 
+          <Badge color="black">
             crisis {solved.crisis}
           </Badge>
-          <Badge color="teal" variant="light">
+          <Badge color="black">
             index {current}
           </Badge>
         </Group>
@@ -104,27 +80,26 @@ function ReadingResult({
             misread.
           </Text>
         )}
+        <Text size="sm" mt={6}>
+          See below for instructions!
+        </Text>
       </Alert>
     );
   }
 
   if (tieIsMoot) {
     return (
-      <Alert color="blue" title={`${matches.length} candidates, same answer`}>
-        <Candidates matches={matches} />. Each one needs the same number of Do Overs so the tie does
-        not matter.
+      <Alert color="blue" title={`${matches.length} candidates, same answer.`}>
+        Each one needs the same number of Do Overs so specific index does not matter (you are good to go!).
       </Alert>
     );
   }
 
   return (
-    <Alert color="yellow" title={`${matches.length} candidates, keep going.`}>
-      <Candidates matches={matches} />
+    <Alert color="yellow" title="Keep typing the spells you see.">
       {tieBreaker ? (
         <Text size="sm" mt={6}>
-          Need a tie-breaking value. Do <strong>{tieBreaker.doOversAway}</strong> Do Over{' '}
-          {tieBreaker.doOversAway === 1 ? '' : 's'}
-          and type what you see.
+          {matches.length} index candidates.
         </Text>
       ) : (
         <Text size="sm" mt={6}>

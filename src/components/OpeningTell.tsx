@@ -1,9 +1,7 @@
-import { Alert, Badge, Code, Group, Stack, Text, UnstyledButton } from '@mantine/core';
+import { Alert, Badge, Code, Group, Table, Text } from '@mantine/core';
 import { Fragment, memo } from 'react';
 
 import type { OpeningRoute, OpeningRoutes, Roll } from '../lib/types.ts';
-
-import Panel from './Panel.tsx';
 
 import styles from './OpeningTell.module.css';
 
@@ -16,21 +14,9 @@ export interface OpeningTellProps {
 }
 
 /**
- * A row with one reading is done the moment that reading appears, so it is
- * filled. A row needing several is not actionable until the last of them, so it
- * stays outlined: the colour is "can I act on this yet", nothing else.
- */
-const toneOf = (route: OpeningRoute) =>
-  route.readings.length === 1
-    ? ({ variant: 'filled', color: 'blue' } as const)
-    : ({ variant: 'outline', color: 'gray' } as const);
-
-/**
- * One opening: the spells to watch for in order, then what it costs.
- *
- * The whole row is the control. Its readings are unique among live openings by
- * name, so seeding them settles the reading on this exact opening, which is what
- * makes the plan card below agree with the row that was clicked.
+ * One opening: the spells to watch for in order, then what it costs. The whole
+ * row is the control - its readings are unique by name, so clicking it settles
+ * the reading on this exact opening and the plan card agrees with what you hit.
  */
 function OpeningRow({
   route,
@@ -39,56 +25,47 @@ function OpeningRow({
   route: OpeningRoute;
   onPickReading: (readings: readonly Roll[]) => void;
 }) {
-  const tone = toneOf(route);
   const spells = route.readings.map((roll) => `${roll.spell} times ${roll.casts}`).join(', then ');
 
   return (
-    <UnstyledButton
-      component="li"
-      className={styles.row}
-      onClick={() => onPickReading(route.readings)}
-      aria-label={`${spells}. Then ${route.doOvers} Do Overs. Load this reading.`}
-    >
-      <Group gap={6} wrap="wrap" align="center">
-        {route.readings.map((roll, step) => (
-          <Fragment key={roll.index}>
-            {step > 0 && (
-              <Text fz="xs" c="dimmed">
-                →
-              </Text>
-            )}
-            <Badge size="sm" {...tone} className={styles.badge}>
-              {roll.spell} ×{roll.casts}
-            </Badge>
-          </Fragment>
-        ))}
+    <Table.Tr>
+      <Table.Td
+        onClick={() => onPickReading(route.readings)}
+        aria-label={`${spells}. Then ${route.doOvers} Do Overs. Load this reading.`}
+      >
+        <Group gap={6} wrap="wrap" align="center">
+          {route.readings.map((roll, step) => (
+            // because react and its warnings about keys on loops -_-
+            // else it'd have been the usual <></>
+            <Fragment key={roll.index}>
+              {step > 0 && (
+                <Text fz="xs" c="dimmed">
+                  →
+                </Text>
+              )}
+              <Badge size="sm" color="grape" className={styles.badge}>
+                {roll.spell} ×{roll.casts}
+              </Badge>
+            </Fragment>
+          ))}
+        </Group>
+      </Table.Td>
+      <Table.Td>
         <Text fz="sm" fw={600}>
-          → {route.doOvers} Do Over{route.doOvers === 1 ? '' : 's'}
+          {route.doOvers} × Do Over
         </Text>
-      </Group>
-    </UnstyledButton>
+      </Table.Td>
+    </Table.Tr>
   );
 }
 
 /**
- * Either the spell cannot be reached at all, or here is every opening that
- * reaches it.
- *
- * There is no "too common" case here any more: App decides between this panel
- * and the reader, and only renders this one when the list is short enough to
- * scan. Whether the list is exhaustive is a separate question, and the copy
- * below asks `complete` rather than assuming App checked it.
+ * Either the spell can't be reached at all, or here's every opening that gets it.
+ * No "too common" case here - App picks between this panel and the reader. The
+ * copy below still asks `complete` itself rather than assuming App checked.
  */
-function Tell({
-  guide,
-  spell,
-  onPickReading,
-}: {
-  guide: OpeningRoutes;
-  spell: string;
-  onPickReading: (readings: readonly Roll[]) => void;
-}) {
-  const { routes, dead, live, complete } = guide;
+function Tell({ guide, spell, onPickReading }: OpeningTellProps) {
+  const { routes, complete } = guide;
 
   if (routes.length === 0) {
     return (
@@ -107,49 +84,34 @@ function Tell({
 
   return (
     <>
-      <Stack component="ul" gap={2} className={styles.badges}>
-        {routes.map((route) => (
-          <OpeningRow
-            key={`${route.index}/${route.crisis}`}
-            route={route}
-            onPickReading={onPickReading}
-          />
-        ))}
-      </Stack>
+      <Table className={styles.badges}>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th w={350}>If you see...</Table.Th>
+            <Table.Th>Do</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {routes.map((route) => (
+            <OpeningRow
+              key={`${route.index}/${route.crisis}`}
+              route={route}
+              onPickReading={onPickReading}
+            />
+          ))}
 
-      {/*
-        Only sound on a complete list. App picks the reader instead when the list
-        is incomplete, but this panel is the thing making the claim, so it reads
-        the verdict itself rather than trusting a condition it cannot see.
-      */}
-      {complete && (
-        <Text size="sm" fw={600}>
-          Anything else, do an ATB/turn refresh.
-        </Text>
-      )}
-      <Text size="xs" c="dimmed">
-        {routes.length} of {live} openings reach <Code>{spell}</Code>, ruling out {dead} dead ones.
-        The count is the Do Overs owed once every spell on that row has shown. Cast counts confirm a
-        row, they never pick one: every row is decided by the spell names alone. Click a row to load
-        it into the reader.
-      </Text>
+          {/* Only true on a complete list, and this panel is the one making the
+          claim, so it checks rather than trusting a condition it can't see. */}
+          {complete && (
+            <Table.Tr>
+              <Table.Td>Anything else</Table.Td>
+              <Table.Td fw={600}>Refresh ATB</Table.Td>
+            </Table.Tr>
+          )}
+        </Table.Tbody>
+      </Table>
     </>
   );
 }
 
-function OpeningTell({ guide, spell, onPickReading }: OpeningTellProps) {
-  return (
-    <Panel
-      title="3. Opening Tell"
-      description={
-        guide.routes.length > 0
-          ? `Watch the Slot. Match a row, then Do Over that many times.`
-          : `Whether ${spell} can be reached at all.`
-      }
-    >
-      <Tell guide={guide} spell={spell} onPickReading={onPickReading} />
-    </Panel>
-  );
-}
-
-export default memo(OpeningTell);
+export default memo(Tell);

@@ -12,8 +12,7 @@ import type { Observation, Party, Roll, Target } from '../lib/types.ts';
 
 /**
  * Four readings settle most states, but adjacent crisis levels can read the same
- * row of the slot array and stay tied for a while. The worst tie measured needs
- * 16, so the panel grows to that rather than dead-ending at four.
+ * slot row and stay tied. Worst tie measured needs 16, so the panel goes to 16.
  */
 const MAX_OBSERVATIONS = 16;
 
@@ -33,16 +32,14 @@ const emptyReading = (): Observation[] =>
 export function useSlotReading(party: Party, target: Target, offset: number) {
   const [observations, setObservations] = useState<Observation[]>(emptyReading);
 
-  // Whether the first spell typed is the one the Limit Break opened on, which
-  // is much the stronger constraint and the normal case. It cannot be inferred:
-  // assuming it when it is false excludes the true state for 76% of readings
-  // begun part way in, without saying so.
+  // Is the first spell typed the one it opened on? Much the stronger constraint
+  // and the normal case, but it can't be inferred - assuming it wrongly drops the
+  // true state for 76% of readings begun part way in, silently.
   const [readFromOpening, setReadFromOpening] = useState(true);
 
-  // The party is what rules out the states the crisis formula forbids at this
-  // HP. Without it the search returns all 1,024 and most of them cannot exist,
-  // which is how one reading of Sleep at Lv11 349/2797 used to come back with 13
-  // candidates when only one was a live opening.
+  // The party rules out states the crisis formula forbids at this HP. Without it
+  // the search returns all 1,024, most of which can't exist - one reading of Sleep
+  // at Lv11 349/2797 used to come back with 13 candidates, only one of them live.
   const reading = useMemo(
     () =>
       identify(party.level, observations, {
@@ -60,12 +57,9 @@ export function useSlotReading(party: Party, target: Target, offset: number) {
   const taken = consecutivePrefix(observations).length;
   const visible = Math.min(MAX_OBSERVATIONS, taken + VISIBLE_HEADROOM);
 
-  // A tie that every candidate answers the same way is not worth breaking. The
-  // answer is a Do Over count or the absence of one, so two candidates agree
-  // when they need the same number of presses, or when neither can get there.
-  //
-  // Memoised because doOversTo walks up to 64 indices per candidate, and a tie
-  // can carry a dozen of them.
+  // A tie where every candidate gives the same answer isn't worth breaking - they
+  // agree if they need the same number of presses, or if none can get there.
+  // Memoised: doOversTo walks up to 64 indices per candidate and ties get big.
   const tieIsMoot = useMemo(() => {
     if (reading.matches.length <= 1) return false;
     const plans = reading.matches.map(
@@ -84,16 +78,16 @@ export function useSlotReading(party: Party, target: Target, offset: number) {
   }, []);
 
   /**
-   * Start a fresh reading from a run of spells, which is what picking a row off
-   * the opening list means: the row names exactly what the runner saw, and a row
-   * is unique among live openings by name, so seeding it settles the reading.
+   * Start a fresh reading from a run of spells - what clicking a row on the
+   * opening list means. Rows are unique among live openings by name, so seeding
+   * one settles the reading.
    *
-   * The list is only sound on the OPENING roll, so this also ticks the box that
-   * says so: leaving it as the runner last had it would solve the new reading
-   * under the residue scope and quietly return the wrong states.
+   * Also ticks the "first spell is the opening" box, because the list is only
+   * sound on the opening roll. Leaving it as the runner had it would solve under
+   * the residue scope and quietly return the wrong states.
    *
-   * The cast count is dropped while SHOW_CAST_COUNTS is off. It would otherwise
-   * filter the search on a value the runner can neither see nor clear.
+   * Cast counts are dropped while SHOW_CAST_COUNTS is off, or they'd filter on a
+   * value the runner can't see or clear.
    */
   const handleStartFrom = useCallback((readings: readonly Roll[]) => {
     const next = emptyReading();
@@ -106,12 +100,12 @@ export function useSlotReading(party: Party, target: Target, offset: number) {
 
   const handleClearReading = useCallback(() => {
     setObservations(emptyReading());
+    setReadFromOpening(true);
   }, []);
 
-  // Only plan from a state the reading actually settled on, or from a tie whose
-  // candidates all need the same number of Do Overs. Reaching into matches[0]
-  // whenever anything matched meant an unsettled reading rendered a confident
-  // plan built on whichever candidate happened to sort first.
+  // Only plan from a state the reading settled on, or a tie where every candidate
+  // needs the same presses. Grabbing matches[0] whenever anything matched gave a
+  // confident plan built on whichever candidate happened to sort first.
   const planState = solved ?? (tieIsMoot ? (reading.matches[0] ?? null) : null);
   const planFrom = current ?? planState?.current ?? null;
   const planCrisis = crisis ?? planState?.crisis ?? null;

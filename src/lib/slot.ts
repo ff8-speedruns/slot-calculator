@@ -1,25 +1,18 @@
 /**
- * Selphie's Slot roll, and the manipulation planning built on top of it.
+ * Selphie's Slot roll, plus the manip planning on top of it.
  *
- * Two separate things happen.
+ * Two things happen. Opening the Limit Break rolls a crisis level once, from the
+ * byte at the opening index plus Selphie's HP and statuses, and it's stuck there
+ * for the rest of the Limit Break. Every Do Over after that only rolls the
+ * spell, reading four bytes and moving the index +4:
  *
- * When the Limit Break opens, the game rolls a crisis level once, from the byte
- * at the opening index and Selphie's HP and statuses. That value is stored on
- * her and does not move again for the rest of the Limit Break.
+ *   B[i+1]  the [0..4] term, mod 5
+ *   B[i+2]  the slot mod, through the thresholds below
+ *   B[i+3]  which of the set's 8 spells, mod 8
+ *   B[i+4]  the cast count, mod that spell's max
  *
- * Every Do Over after that rolls only the spell, reading four consecutive bytes
- * and advancing the index by four:
- *
- *   B[i + 1]  the [0..4] term, taken modulo 5
- *   B[i + 2]  the slot mod, through the thresholds below
- *   B[i + 3]  which of the set's 8 spells, modulo 8
- *   B[i + 4]  the cast count, modulo that spell's maximum
- *
- * The crisis level feeds the slot index alongside those as a constant.
- *
- * Nothing in any of this involves the enemy, the encounter or the battle scene.
- * What a fight changes is where the index sits when you get there, and how fast
- * other actors move it while you are deciding.
+ * None of this touches the enemy or the encounter. What a fight changes is where
+ * the index already is, and how fast other actors move it while you think.
  */
 
 import { RNG_TABLE, SLOT_ARRAY } from './slot.data.ts';
@@ -40,6 +33,7 @@ import type {
   Party,
   Reading,
   ReadingScope,
+  RefreshEstimate,
   ReopenOutlook,
   Roll,
   Statuses,
@@ -50,16 +44,21 @@ import type {
 export const CYCLE = RNG_TABLE.length;
 
 /**
- * Whether the cast-count inputs are shown.
- *
- * A count narrows the reading independently of the spell name, because it comes from a
- * different byte, and every search still filters on one when it is given. Switched off
- * to decrease the amount of information a runner needs to input.
+ * Whether the cast-count inputs are shown. Off to keep typing down: the count
+ * does narrow a reading (different byte from the name), but every search still
+ * filters on one when it's given, so nothing is lost by hiding the input.
  */
 export const SHOW_CAST_COUNTS = false;
 
 /** A Do Over advances the RNG index by this much. */
 export const DO_OVER_STEP = 4;
+
+/**
+ * Assumed index movement per ATB refresh, until a runner overrides it. Three
+ * captures put a skipped turn at +7; a fourth moved +17 over four turns, and 17
+ * is prime, so no one constant fits all of them. A starting guess, not a plan.
+ */
+export const DEFAULT_REFRESH_STEP = 7;
 
 /** Crisis levels the Limit Break can open at. 0 means it is not available. */
 const MAX_CRISIS = 4 satisfies Crisis;
@@ -91,13 +90,10 @@ export const STATUS_WEIGHTS: Record<keyof Statuses, number> = {
 const STATUS_MULTIPLIER = 10;
 
 /**
- * Reads an array slot that is dense by construction.
- *
- * `noUncheckedIndexedAccess` makes every `array[i]` possibly-undefined, which is
- * the right default and wrong for the tables here: the RNG table is exactly 256
- * long and every read is wrapped into it, and the reach table is built with all
- * five crisis slots filled. Throwing on a miss keeps that guarantee honest
- * without scattering non-null assertions through the arithmetic.
+ * Reads a slot we know is filled. `noUncheckedIndexedAccess` makes every
+ * `array[i]` possibly-undefined. Right in general, noise for these tables - the
+ * RNG table is exactly 256 long and every read wraps into it.
+ * Throwing beats sprinkling `!` through the arithmetic.
  */
 export function at<T>(array: readonly T[], index: number): T {
   const value = array[index];
@@ -106,10 +102,8 @@ export function at<T>(array: readonly T[], index: number): T {
 }
 
 /**
- * An index paired with the crisis level in play there.
- *
- * Both things this describes are the same pair: an opening (an index whose byte
- * rolls that crisis) and a candidate state the reader has not yet placed.
+ * An index plus the crisis in play there. Covers both an opening and a candidate
+ * state the reader hasn't placed yet - they're the same pair.
  */
 interface State {
   index: number;
@@ -135,10 +129,8 @@ export function statusSum(statuses: Statuses = {}): number {
 }
 
 /**
- * The crisis level Selphie opens the Limit Break at, given the index the menu
- * opened on. Returns 0-4, where 0 means no Limit Break at all.
- *
- * This is rolled once. Every Do Over that follows keeps whatever came out here.
+ * Crisis level Selphie opens at, from the index the menu opened on. 0 means no
+ * Limit Break. Rolled once; every Do Over after keeps whatever came out.
  */
 export function crisisAtOpen(
   openingIndex: number,
@@ -155,15 +147,12 @@ export function crisisAtOpen(
 }
 
 /**
- * The spell on screen at one RNG index, for a Limit Break already open at a
- * known crisis level.
+ * The spell on screen at one index, for a Limit Break already open at a known
+ * crisis.
  *
- * The slot index is deliberately not clamped. The kernel's array is 60 bytes,
- * five slot mods of twelve levels, but this reaches 65 at level 100 with crisis
- * 4 and a [0..4] term of 4. The game reads straight past the end into the slot
- * sets that follow it, and those six rows are reachable in play. That overflow
- * is also why a level 100 party sees a different spell distribution than a
- * level 8 one: the level term shifts the read window by ten.
+ * slotIndex is NOT clamped on purpose. The kernel's array is 60 bytes but this
+ * reaches 65 at Lv100/crisis 4/x=4, and the game really does read past the end
+ * into the slot sets after it. Those six rows show up in play.
  */
 export function spellAt(index: number, level: number, crisis: Crisis): Roll {
   const here = wrapIndex(index);
@@ -175,9 +164,8 @@ export function spellAt(index: number, level: number, crisis: Crisis): Roll {
     1;
   const spellIndex = at(RNG_TABLE, wrapIndex(here + 3)) % 8;
 
-  // Every slot index the expression above can produce, 0 through 65, has a row,
-  // so this cannot miss. The guard is here so a future change to the level or
-  // crisis range fails loudly rather than reporting a spell of undefined.
+  // 0 through 65 all have rows so this can't miss. Guard is here so a future
+  // level/crisis change fails loudly instead of returning undefined.
   const cell = SLOT_ARRAY[slotIndex]?.[spellIndex];
   if (!cell) throw new RangeError(`no slot data for ${slotIndex}/${spellIndex}`);
 
@@ -197,22 +185,16 @@ const matchesTarget = (roll: Roll, { spell, casts = 0 }: Target): boolean =>
   roll.spell === spell && (!casts || roll.casts === casts);
 
 /**
- * A run of consecutive Do Overs from one state, in order.
- *
- * Every reading sequence in this file is this same walk: the path to a target,
- * the signature that identifies an opening, the run a capture recorded. Writing
- * it once means the step arithmetic can only be wrong in one place.
+ * A run of consecutive Do Overs from one state. Every reading sequence in here
+ * is this same walk, so the +4 arithmetic only lives in one place.
  */
 const rollsFrom = (index: number, level: number, crisis: Crisis, depth: number): Roll[] =>
   Array.from({ length: depth }, (_, step) => spellAt(index + DO_OVER_STEP * step, level, crisis));
 
 /**
- * Every index the Limit Break can open at, with the crisis it would roll there.
- *
- * The single most repeated question in this file. `hpOutlook` still counts
- * inline: it asks this once per sampled HP, and building a fresh list a couple
- * of hundred times over is the one place the helper would cost more than the
- * duplication it removes.
+ * Every index the Limit Break can open at, with the crisis it rolls there.
+ * `hpOutlook` still counts inline - it asks this once per sampled HP, and
+ * building a couple of hundred throwaway lists costs more than it saves.
  */
 export function liveOpenings(party: Party): State[] {
   const out: State[] = [];
@@ -228,16 +210,14 @@ export function rollCycle(level: number, crisis: Crisis): Roll[] {
   return Array.from({ length: CYCLE }, (_, index) => spellAt(index, level, crisis));
 }
 
-/** Every spell the slot array can produce, for populating menus. */
-export const SPELLS: readonly string[] = [
-  ...new Set(SLOT_ARRAY.flat().map((cell) => cell[0])),
-].sort();
-
 /**
- * Getting from one index to another. A gap that is not a multiple of four
- * cannot be closed by Do Overs alone, and the remainder is how many turn-skips
- * it costs.
+ * Every spell the slot array can produce, for populating menus.
  */
+export const SPELLS: readonly string[] = [...new Set(SLOT_ARRAY.flat().map((cell) => cell[0]))];
+
+const SPELL_NAMES = new Set(SPELLS.map((name) => name.toLowerCase()));
+
+/** Gap between two indices. Anything not a multiple of 4 needs turn-skips. */
 function planTo(from: number, to: number) {
   const steps = wrapIndex(to - from);
   const skips = steps % DO_OVER_STEP;
@@ -245,12 +225,8 @@ function planTo(from: number, to: number) {
 }
 
 /**
- * Every index that shows the target at this crisis level, nearest first.
- * `casts` of 0 accepts any cast count.
- *
- * `reachable` marks the ones you can Do Over onto without leaving the Limit
- * Break. The rest sit off the four-step lattice from where you are, so getting
- * to them means re-opening at a new crisis, which is routeTo's job.
+ * Every index showing the target at this crisis, nearest first. `casts` 0 means
+ * any. `reachable` marks the ones on the +4 lattice from where you are.
  */
 export function findSpell(
   level: number,
@@ -267,18 +243,16 @@ export function findSpell(
 }
 
 /**
- * Every spell, sorted into the reason it is or is not worth chasing.
+ * Every spell, sorted by why it is or isn't worth chasing.
  *
- *   'level'  The spell is in no cell of the slot array this level band can
- *            read, at any crisis level. 11/50 spells are in this state at level 11.
- *   'hp'     Spell exists at this level, but no opening at the current HP can produce
- *            it. Need to lower Selphie's HP.
- *   'ready'  At least 1 opening reaches the spell.
+ *   'level'  not in any slot row this level can read, at any crisis. 11 of 50
+ *            spells are stuck here at Lv11.
+ *   'hp'     exists at this level, but no opening at this HP gets to it.
+ *   'ready'  at least one opening reaches it.
  */
 /**
- * Whether a spell is worth flagging in the picker: it exists in the map and is
- * not simply reachable. Both the badge and the width the picker reserves for it
- * ask this, and a second copy of the condition goes stale the moment one moves.
+ * Does this spell need a warning badge? The badge and the width the picker
+ * reserves for it both ask, so the rule lives here instead of in two places.
  */
 export const isBlocked = (entry: Availability | undefined): entry is Availability =>
   entry !== undefined && entry.state !== 'ready';
@@ -321,12 +295,9 @@ export function spellAvailability(party: Party): Map<string, Availability> {
 }
 
 /**
- * Inside one Limit Break the crisis is held and every move is +4, so the only
- * states you can see are the 64 indices in your residue class at your crisis.
- * Either the target is one of them, in which case this is the whole plan and it
- * carries no risk at all, or it's not.
- *
- * Returns null when it is not in there.
+ * Inside one Limit Break the crisis is held and every move is +4, so you can only
+ * ever see the 64 indices in your residue class. Either the target is one of
+ * them and this is the whole plan, or it isn't and you get null.
  */
 export function doOversTo(
   level: number,
@@ -342,12 +313,8 @@ export function doOversTo(
 }
 
 /**
- * Every spell you will see between where you stand and the target, both ends
- * included: entry 0 is what is on screen right now, and the last entry is the
- * target itself. So the number of Do-Overs is one less than the length.
- *
- * Null when the target is not in this Limit Break at all, which is the same
- * question doOversTo answers and is left to it rather than guessed at here.
+ * Spells from where you stand to the target, both ends included - so the Do Over
+ * count is length minus one. Null if it isn't in this Limit Break.
  */
 export function doOverPath(
   level: number,
@@ -367,8 +334,7 @@ export function doOverPath(
 function reachTable(level: number, { spell, casts = 0 }: Target): ReachTable {
   const table: boolean[][] = [];
   for (let residue = 0; residue < DO_OVER_STEP; residue += 1) {
-    // Index 0 is the no-Limit-Break case, which reaches nothing by definition.
-    // Keeping it in the row means the crisis level can index straight into it.
+    // Slot 0 is the no-Limit-Break case, so the crisis can index straight in.
     const row = [false];
     for (const crisis of CRISIS_LEVELS) {
       row.push(doOversTo(level, residue, crisis, { spell, casts }) !== null);
@@ -381,7 +347,7 @@ function reachTable(level: number, { spell, casts = 0 }: Target): ReachTable {
 /** Reachability by residue class and crisis level. See reachTable. */
 type ReachTable = boolean[][];
 
-/** Reads one cell of a reach table, which is dense by construction. */
+/** Reads one cell of a reach table. Always filled. */
 const reaches = (table: ReachTable, index: number, crisis: Crisis): boolean =>
   at(at(table, index % DO_OVER_STEP), crisis);
 
@@ -406,42 +372,73 @@ export function reopenOutlook(party: Party, { spell, casts = 0 }: Target): Reope
     crisisLevels: [
       ...new Set(openings.map((index) => crisisAtOpen(index, party) as Crisis)),
     ].sort(),
-    // The number that actually matters to a runner, because it folds in both
-    // failures: a turn produces nothing unless the Limit Break appears AND the
-    // opening it appears at is one that reaches the target. Per turn that is
-    // good / 256, so the expected wait is 256 / good turns of skipping.
+    // A turn pays off only if the Limit Break appears AND lands on an opening
+    // that reaches the target, so the per-turn chance is good / 256.
     expectedTurns: good ? CYCLE / good : Infinity,
+    // The mean sits well above the median here: at 60 of 256 the mean is 4 but
+    // half of all attempts are done in 2. Showing only the mean is what made a
+    // two-refresh success look like luck when it was the normal case.
+    halfWithin: refreshesWithin(good, 0.5),
+    ninetyWithin: refreshesWithin(good, 0.9),
     possible: good > 0,
   };
 }
 
 /**
- * Every opening that reaches the target, with the readings that identify it and
- * the Do-Overs owed once they have been seen.
+ * How many refreshes it takes to be `chance` sure of a working opening, on the
+ * same per-turn probability the mean above is built from.
+ */
+function refreshesWithin(good: number, chance: number): number {
+  if (good <= 0) return Infinity;
+  const perTurn = good / CYCLE;
+  if (perTurn >= 1) return 1;
+  return Math.ceil(Math.log(1 - chance) / Math.log(1 - perTurn));
+}
+
+/**
+ * First opening that reaches the target, if every refresh really moved the index
+ * by `step`. Other tools quote this as an instruction; here it's a guess, because
+ * the fixed step is the shakiest thing in the model (see RefreshEstimate).
  *
- * This is the whole answer up front, so a runner who is busy playing does not
- * have to type anything: watch the Slot, match a row, press Do-Over that many
- * times. Anything not listed cannot reach the target, so the turn can be passed.
+ * Being wrong is cheap if the runner still reads every opening and expensive if
+ * they use it to skip reading them, so show it as a guess. Null if nothing on
+ * the walk works.
+ */
+export function nextWorkingOpening(
+  party: Party,
+  target: Target,
+  from: number,
+  step: number,
+): RefreshEstimate | null {
+  if (!Number.isInteger(step) || step <= 0) return null;
+  const reachable = reachTable(party.level, target);
+
+  // After CYCLE steps the walk is back where it started, so nothing new can
+  // turn up past this bound.
+  for (let refreshes = 1; refreshes <= CYCLE; refreshes += 1) {
+    const index = wrapIndex(from + step * refreshes);
+    const crisis = crisisAtOpen(index, party);
+    if (crisis && reaches(reachable, index, crisis)) return { refreshes, index, crisis };
+  }
+  return null;
+}
+
+/**
+ * Every opening that reaches the target, the spells that identify it, and the Do
+ * Overs owed once you've seen them. The whole answer up front, so a runner who's
+ * busy playing types nothing: watch the Slot, match a row, press Do Over.
  *
- * Openings are told apart by spell NAME alone, never by the cast count, even
- * though the count is on screen and is carried on every reading for the runner
- * to check against. Keying on the count was measured and abandoned: at Lv8
- * 34/482 it made `Sleep ×2` look unique at the first reading when two live
- * openings show Sleep, and the other one cannot reach The End. A runner who
- * glossed the count would have spent 57 Do-Overs on a dead opening. Making the
- * count decisive turns one misread digit into a confidently wrong route, so it
- * only ever confirms a row, never establishes it.
+ * Rows are keyed on spell NAME only, never the cast count. Keying on the count
+ * was tried and it broke: at Lv8 34/482 it made `Sleep x2` look unique on the
+ * first reading, but two live openings show Sleep and the other can't reach The
+ * End. Gloss the count and you'd spend 57 Do Overs on a dead opening. Counts ride
+ * along on every reading to confirm a row, never to pick one.
  *
- * An opening is only listed once its names are unique among every live opening,
- * dead ones included. Each row is as short as it can be, because the smallest
- * unique depth is chosen per opening rather than one depth for the whole list.
- *
- * Openings still ambiguous at `maxDepth` are counted in `unresolved` rather than
- * listed, because a row a runner cannot trust is worse than no row. An
- * unresolved opening DOES reach the target, so a caller must not tell a runner
- * that anything unlisted is safe to pass. The default of 5 is measured: across
- * every level, HP, status and maxHp sampled, five readings leave nothing
- * unresolved.
+ * A row is only listed once its names are unique among all live openings, dead
+ * ones included, and each row is as short as that allows. Anything still
+ * ambiguous at `maxDepth` goes in `unresolved` instead - those openings DO reach
+ * the target, so don't tell a runner that unlisted means safe to pass. Default 5
+ * is measured; nothing sampled needed more.
  */
 export function openingRoutes(
   party: Party,
@@ -451,14 +448,12 @@ export function openingRoutes(
   const { level } = party;
   const target = { spell, casts };
 
-  // Reachability depends only on the residue class and the crisis, never on the
-  // index itself, so the 16-cell table answers it for every opening at a fixed
-  // cost. Asking doOversTo per opening instead walked up to 64 indices each,
-  // about 8,000 rolls at a typical party state to compute 125 booleans.
+  // Reachability only depends on residue class and crisis, so this 16-cell table
+  // covers every opening at fixed cost. Asking doOversTo per opening was ~8,000
+  // rolls to work out 125 booleans.
   const reachable = reachTable(level, target);
 
-  // Each opening is walked to the deepest depth once. Every shallower signature
-  // is a prefix of that run, so no index is rolled twice.
+  // Walk each opening to max depth once; shallower signatures are prefixes.
   const walked = liveOpenings(party).map((state) => ({
     state,
     readings: rollsFrom(state.index, level, state.crisis, maxDepth),
@@ -469,8 +464,8 @@ export function openingRoutes(
       .map((roll) => roll.spell)
       .join(',');
 
-  // How many live openings share each signature, one map per depth, so the
-  // uniqueness test below is a lookup rather than a scan over all 256 again.
+  // How many openings share each signature, per depth, so the test below is a
+  // lookup instead of another scan over all 256.
   const shared: Map<string, number>[] = [];
   for (let depth = 1; depth <= maxDepth; depth += 1) {
     const counts = new Map<string, number>();
@@ -503,8 +498,8 @@ export function openingRoutes(
       continue;
     }
 
-    // Each reading after the first cost a Do-Over, so the runner is standing
-    // this far along by the time the last one is on screen.
+    // Every reading after the first cost a Do Over, so this is where you're
+    // standing once the last one shows.
     const standing = wrapIndex(state.index + DO_OVER_STEP * (depth - 1));
     const from = doOversTo(level, standing, state.crisis, target);
     if (!from) throw new Error(`no route from ${standing} though ${state.index} had one`);
@@ -517,8 +512,7 @@ export function openingRoutes(
     });
   }
 
-  // Fewest readings first, then the shortest wait, so the cheapest rows to act
-  // on are at the top.
+  // Cheapest rows first: fewest readings, then shortest wait.
   routes.sort(
     (a, b) => a.readings.length - b.readings.length || a.doOvers - b.doOvers || a.index - b.index,
   );
@@ -528,10 +522,8 @@ export function openingRoutes(
     unresolved,
     dead,
     live: walked.length,
-    // Whether the list accounts for every opening that reaches the target, and
-    // so whether a caller may tell a runner that anything unlisted is safe to
-    // pass. A property of this result, not of a caller's layout choices, so it
-    // is settled here instead of being re-derived at each call site.
+    // Does the list cover every opening that works? Decides whether a caller can
+    // say "anything unlisted is safe to pass". Settled here, not per call site.
     complete: unresolved === 0,
   };
 }
@@ -541,9 +533,8 @@ export function openingRoutes(
  */
 export function hpOutlook(party: Party, { spell, casts = 0 }: Target): HpOutlook {
   const table = reachTable(party.level, { spell, casts });
-  // Count the openings that reach the target, not the ratio. A ratio flatters
-  // high HP, where almost nothing is live but the one opening that is happens
-  // to work: that reads as 100% and means a wait of over a hundred turns.
+  // Count openings, not a ratio. A ratio flatters high HP, where almost nothing
+  // is live but the one that is happens to work - reads as 100%, means 100 turns.
   const goodAt = (currentHp: number): number => {
     const at = { ...party, currentHp };
     let good = 0;
@@ -574,14 +565,20 @@ export function hpOutlook(party: Party, { spell, casts = 0 }: Target): HpOutlook
 export const sameSpell = (rolled: string, typed: string): boolean =>
   rolled.toLowerCase() === typed.toLowerCase();
 
+export const topSpellMatch = (typed: string, options: readonly string[]): string | null => {
+  const needle = typed.trim().toLowerCase();
+  return options.find((name) => name.toLowerCase().startsWith(needle)) ?? null;
+};
+
 /**
- * Observations are one Do Over apart, so a blank in the middle would shift
- * everything after it onto the wrong index. Only the run before the first blank
- * can be trusted to be consecutive.
+ * Rows are one Do Over apart, so a blank in the middle throws off everything
+ * after it. Only the run before the first blank is trustworthy.
  */
 export const consecutivePrefix = (observations: readonly Observation[]): Observation[] => {
-  const firstBlank = observations.findIndex((observation) => !observation?.spell);
-  return [...(firstBlank === -1 ? observations : observations.slice(0, firstBlank))];
+  const firstGap = observations.findIndex(
+    (observation) => !SPELL_NAMES.has(observation?.spell.trim().toLowerCase() ?? ''),
+  );
+  return [...(firstGap === -1 ? observations : observations.slice(0, firstGap))];
 };
 
 /** Does the run of observations start at this index, at this crisis level? */
@@ -601,10 +598,9 @@ function matchesFrom(
 }
 
 /**
- * Cast counts come from a different byte than the spell name, so they narrow
- * the search independently. They are exact now that the maxima come from the
- * kernel, but a misread number on screen is easy, so a search that finds
- * nothing with them is retried without them rather than called a bad reading.
+ * Cast counts come from a different byte than the name, so they narrow the search
+ * on their own. They're exact, but misreading a number on screen is easy, so a
+ * search that finds nothing with them is retried without them.
  */
 function searchWithCastFallback(
   candidates: readonly State[],
@@ -633,19 +629,14 @@ function allStates(): State[] {
 }
 
 /**
- * The states the crisis formula actually permits at this HP.
+ * States the crisis formula actually allows at this HP. Crisis is rolled from the
+ * byte at the OPENING index, so a state only works if some opening it could have
+ * come from rolls the crisis it claims. Without this, one reading of Sleep at
+ * Lv11 349/2797 came back with 13 candidates and only one was live.
  *
- * The crisis level is rolled from the byte at the OPENING index, so a state is
- * only possible if some opening it could have come from rolls the crisis it
- * claims to be in. Leaving this out is what let a single reading of Sleep at
- * Lv11 349/2797 return 13 candidates when only one of them is a live opening.
- *
- * `readFromOpening` is the tight form, used when the first spell typed is the
- * one the Limit Break opened on, so the run's own start index must be that
- * opening. The loose form is all that can be said when the runner started
- * typing part way through: Do Over moves by four and the crisis is held, so the
- * state is possible whenever ANY live opening in the same residue class rolls
- * that crisis, which makes the whole test a lookup on `index % 4`.
+ * `readFromOpening` is the tight version: the first spell typed IS the opening
+ * roll. Otherwise all you can say is that some live opening in the same residue
+ * class rolls that crisis, which is just a lookup on `index % 4`.
  */
 function reachableStates(party: Party, readFromOpening: boolean): State[] {
   const out: State[] = [];
@@ -678,17 +669,12 @@ const positionAfter = (first: number, count: number): number =>
   wrapIndex(first + DO_OVER_STEP * (count - 1));
 
 /**
- * What every row could still be, walking the candidate set down one row at a
- * time.
+ * What each row could still be, narrowing one row at a time. Each shortlist is
+ * the distinct spells the surviving states show at that step. At Lv11 349/2797
+ * that's 23 of 50 spells on row one and usually exactly one by row two.
  *
- * A single pass gives the whole ladder. Each row's shortlist is the distinct
- * spells the states still standing show at that step, and typing one of them
- * narrows the set for the row below. At Lv11 349/2797 that is 23 of the 50
- * spells at the first row and usually exactly one by the second, which turns
- * the next input from a guess into a prediction.
- *
- * `useCasts` follows whatever the search settled on, so the shortlist can never
- * be stricter than the answer beside it.
+ * `useCasts` follows whatever the search settled on, so a shortlist is never
+ * stricter than the answer next to it.
  */
 function optionsByRow(
   candidates: readonly State[],
@@ -705,7 +691,7 @@ function optionsByRow(
     for (const { index, crisis } of alive) {
       seen.add(spellAt(index + DO_OVER_STEP * row, level, crisis).spell);
     }
-    out.push([...seen].sort());
+    out.push(SPELLS.filter((name) => seen.has(name)));
 
     const typed = observations[row];
     if (!typed?.spell) break;
@@ -720,12 +706,9 @@ function optionsByRow(
 }
 
 /**
- * Works out both where you are and which crisis level the Limit Break opened
- * at, from the spells on screen.
- *
- * Each match carries two indices. `index` is where the run started, which is
- * what a written-down capture records. `current` is where the run left you, and
- * is the one to plan from.
+ * Works out where you are and which crisis you opened at, from the spells on
+ * screen. Each match has two indices: `index` is where the run started (what a
+ * written-down capture records), `current` is where it left you - plan from that.
  */
 export function identify(
   level: number,
@@ -737,15 +720,9 @@ export function identify(
   const candidatesFor = (rung: ReadingScope): State[] =>
     rung === 'all' || !party ? allStates() : reachableStates(party, rung === 'opening');
 
-  // How many rows to price up: every filled one, plus the empty one below it,
-  // which is the row the shortlist is actually for. Not capped by how many rows
-  // the caller happened to pass, because a caller passing one filled row still
-  // wants to know what the next one can be, and an empty array still wants the
-  // opening shortlist.
-
-  // Nothing typed yet. There is no reading to solve, but the first row still has
-  // a shortlist, and that is the most useful one of the lot: it is on screen
-  // before the runner has touched anything.
+  // Nothing typed yet. No reading to solve, but the first row still gets a
+  // shortlist - and that's the most useful one, since it's up before the runner
+  // has touched anything.
   if (!useful.length) {
     const chosenNow: ReadingScope = party ? scope : 'all';
     return {
@@ -759,17 +736,15 @@ export function identify(
 
   const search = (rung: ReadingScope) => searchWithCastFallback(candidatesFor(rung), level, useful);
 
-  // 'opening' is the normal case and by far the stronger constraint: three
-  // readings from a live opening settle 98 of 98 states at Lv11 349/2797.
-  // 'residue' covers a runner already several Do Overs in before they started
-  // typing, where only index % 4 can be pinned, and it settles about half as
-  // often. Which one applies is the caller's to say, not this function's.
+  // 'opening' is the normal case and much the stronger constraint: three readings
+  // from a live opening settle 98 of 98 states at Lv11 349/2797. 'residue' is for
+  // someone already a few Do Overs in, where only index % 4 can be pinned, and it
+  // settles about half as often. The caller picks, not this function.
   //
-  // 'all' is the one automatic step, taken only when the chosen rung finds
-  // nothing whatsoever. That means no state the crisis formula permits produces
-  // this reading, so the filter is dropped to keep an answer on screen with
-  // droppedPartyFilter set, rather than telling a runner that the spells in
-  // front of them are impossible.
+  // 'all' is the one automatic fallback, and only when the chosen scope finds
+  // nothing at all. At that point no allowed state produces this reading, so drop
+  // the filter, set droppedPartyFilter, and keep an answer on screen instead of
+  // telling someone the spells in front of them are impossible.
   const chosen: ReadingScope = party ? scope : 'all';
   let rung = chosen;
   let found = search(chosen);
@@ -803,19 +778,16 @@ export function identify(
 }
 
 /**
- * The next reading that would tell two or more candidate states apart.
+ * The next reading that separates two or more tied candidates.
  *
- * Adjacent crisis levels often read neighbouring rows of the slot array, and 27
- * of the array's 55 adjacent row pairs hold the same set id, so those two crisis
- * levels show the identical spell. When that keeps happening the candidates stay
- * tied for several Do Overs. They always separate in the end - measured across
- * ten level bands, every index and every crisis pair, no pair stays tied
- * forever - but it can take up to 16 readings, and 6% of ties need more than
- * four.
+ * Adjacent crisis levels often read neighbouring slot rows, and 27 of the 55
+ * adjacent row pairs share a set id, so they show the same spell and candidates
+ * stay tied. They always separate eventually (checked across ten level bands,
+ * every index, every crisis pair) but it can take 16 readings, and 6% of ties
+ * need more than four.
  *
- * `taken` is how many readings there are already. Returns the number of extra
- * Do Overs needed and what each candidate predicts you will see, so the answer
- * to a tie is a specific instruction rather than "try again".
+ * `taken` is how many readings you already have. Returns how many more Do Overs
+ * you need and what each candidate predicts, so a tie gets a real instruction.
  */
 export function discriminator(
   level: number,

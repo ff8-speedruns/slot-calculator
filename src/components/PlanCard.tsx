@@ -1,7 +1,14 @@
 import { Badge, Code, Group, Paper, Stack, Text } from '@mantine/core';
 import { memo, type ReactNode } from 'react';
 
-import { CYCLE, at, doOverPath, hpOutlook, reopenOutlook } from '../lib/slot.ts';
+import {
+  CYCLE,
+  at,
+  doOverPath,
+  hpOutlook,
+  nextWorkingOpening,
+  reopenOutlook,
+} from '../lib/slot.ts';
 import type { CastFilter, Crisis, Party, Roll } from '../lib/types.ts';
 
 import styles from './PlanCard.module.css';
@@ -13,12 +20,13 @@ export interface PlanCardProps {
   spell: string;
   casts?: CastFilter;
   /**
-   * True when the reading pinned exactly one state. The Do-Over count survives a
-   * moot tie, because that is what makes the tie moot, but the spells on the way
-   * do not: tied candidates sit at different crisis levels and show different
-   * rolls between here and the target. So the route is only listed when settled.
+   * Did the reading pin exactly one state? The Do Over count survives a moot tie
+   * (that's what makes it moot) but the spells on the way don't - tied candidates
+   * sit at different crisis levels. So the route only shows when settled.
    */
   settled: boolean;
+  /** Assumed RNG cost of one ATB refresh. Feeds the estimate and nothing else. */
+  refreshStep: number;
 }
 
 type Verdict = 'good' | 'retry' | 'dead';
@@ -45,12 +53,10 @@ function Card({ tint, children }: { tint: Verdict; children: ReactNode }) {
 }
 
 /**
- * Every spell between here and the target, one line per press. The first line is
- * what is on screen now, so it doubles as a check that the reading was right
- * before a single Do-Over is spent, and the last line is the target.
- *
- * Not truncated: a runner following this presses Do-Over once per line, and a
- * route that stops short of the target is worse than no route. Long ones scroll.
+ * Every spell between here and the target, one line per press. Line one is what's
+ * on screen now, so it doubles as a check that the reading was right before you
+ * spend anything. Never truncated - you press Do Over once per line, so a list
+ * that stops short is useless. Long ones scroll.
  */
 function Route({ path }: { path: Roll[] }) {
   const width = Math.max(3, String(path.length - 1).length + 1);
@@ -85,7 +91,15 @@ const round = (value: number): string =>
  * 3. It is not reachable at this level at all. That is a hard stop because it doesn't matter
  *    what the CL/HP is, the spell is simply not available in the slot-array rows at this level.
  */
-function PlanCard({ party, from, fromCrisis, spell, casts = 0, settled }: PlanCardProps) {
+function PlanCard({
+  party,
+  from,
+  fromCrisis,
+  spell,
+  casts = 0,
+  settled,
+  refreshStep,
+}: PlanCardProps) {
   const want = { spell, casts };
   // The path's last entry is the hit, and its length is the Do-Over count plus
   // one, so this is the same value doOversTo returns without walking twice for it.
@@ -130,6 +144,7 @@ function PlanCard({ party, from, fromCrisis, spell, casts = 0, settled }: PlanCa
   // Only reached when the target is not in this Limit Break, so the walk this
   // costs is not paid on the common path above.
   const outlook = reopenOutlook(party, want);
+  const estimate = nextWorkingOpening(party, want, from, refreshStep);
 
   if (outlook.possible) {
     return (
@@ -155,12 +170,27 @@ function PlanCard({ party, from, fromCrisis, spell, casts = 0, settled }: PlanCa
 
         <Group gap="lg" wrap="wrap">
           <Step label="Openings that work" value={`${outlook.good}/${outlook.live}`} />
-          <Step label="Typical Turns" value={round(outlook.expectedTurns)} />
+          <Step label="Refreshes, 50%" value={outlook.halfWithin} />
+          <Step label="Refreshes, 90%" value={outlook.ninetyWithin} muted />
+          <Step label="Average" value={round(outlook.expectedTurns)} muted />
         </Group>
 
         <Text c="blue.0" fz="sm" fw={600}>
           Not in this Slot Table. ATB refresh and start over.
         </Text>
+        <Text c="blue.0" fz="xs">
+          50% of the time you will find it within <strong>{outlook.halfWithin}</strong> total refresh
+          {outlook.halfWithin === 1 ? '' : 'es'} (counting all living characters), 90% of the time within{' '}
+          <strong>{outlook.ninetyWithin}</strong>.
+        </Text>
+        {estimate && (
+          <Text c="yellow.2" fz="xs">
+            <strong>Refreshes are a rough guess:</strong> assuming an ATB refresh moves RNG by {refreshStep} every time,
+            the next working opening is <strong>{estimate.refreshes}</strong> refresh
+            {estimate.refreshes === 1 ? '' : 'es'} away. Refreshes are the least confirmed thing in this tool, so do not skip
+            reading the openings in between.
+          </Text>
+        )}
       </Card>
     );
   }

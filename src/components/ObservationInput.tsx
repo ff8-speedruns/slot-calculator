@@ -1,7 +1,10 @@
 import { Autocomplete, Group, Select } from '@mantine/core';
+import { memo } from 'react';
 
 import { SHOW_CAST_COUNTS, SPELLS, sameSpell } from '../lib/slot.ts';
 import type { CastFilter, Observation } from '../lib/types.ts';
+
+import { spellKeyDown, startsWithFilter } from './spellSearch.ts';
 
 import styles from './ObservationInput.module.css';
 
@@ -18,6 +21,8 @@ const CAST_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export interface ObservationInputProps {
+  /** Which reader row this is. Travels back out through onChange. */
+  position: number;
   placeholder: string;
   value: Observation;
   /**
@@ -26,27 +31,24 @@ export interface ObservationInputProps {
    * spell list goes back on.
    */
   options: string[];
-  onChange: (value: Observation) => void;
+  onChange: (position: number, value: Observation) => void;
 }
 
 /** One row of the reader: a spell name, and optionally its cast count. */
-export default function ObservationInput({
+function ObservationInput({
+  position,
   placeholder,
   value,
   options,
   onChange,
 }: ObservationInputProps) {
   const { spell, casts } = value;
+  const list = options.length ? options : SPELLS;
 
-  const handleSpellChange = (next: string) => onChange({ spell: next, casts });
+  const handleSpellChange = (next: string) => onChange(position, { spell: next, casts });
   const handleCastsChange = (next: string | null) =>
-    onChange({ spell, casts: (Number(next) || 0) as CastFilter });
+    onChange(position, { spell, casts: (Number(next) || 0) as CastFilter });
 
-  // Suggested, never enforced. A runner whose earlier row was a misread has to
-  // be able to type the thing this list says is impossible, because that is
-  // exactly the moment they need to correct it. What the list does instead is
-  // say so, which is useful on its own: a spell off the list means either a
-  // misread above, or something in the fight moved the RNG between Do Overs.
   const typed = spell.trim();
   const unexpected =
     options.length > 0 && typed !== '' && !options.some((name) => sameSpell(name, typed));
@@ -55,11 +57,16 @@ export default function ObservationInput({
     <Group gap="xs" wrap="nowrap">
       <Autocomplete
         className={styles.spell}
-        data={options.length ? options : (SPELLS as string[])}
+        data={list as string[]}
+        filter={startsWithFilter}
+        // Arms the top option, so the highlight matches what Tab and Enter
+        // are about to commit. The target picker does the same.
+        selectFirstOptionOnChange
         placeholder={placeholder}
         aria-label={placeholder}
         value={spell}
         onChange={handleSpellChange}
+        onKeyDown={spellKeyDown(handleSpellChange, list)}
         error={unexpected ? 'Nothing that fits the rows above shows this.' : undefined}
       />
       {SHOW_CAST_COUNTS && (
@@ -76,3 +83,15 @@ export default function ObservationInput({
     </Group>
   );
 }
+
+// Prevent every keystroke from rebuilding the whole reading.
+export default memo(
+  ObservationInput,
+  (before, after) =>
+    before.position === after.position &&
+    before.placeholder === after.placeholder &&
+    before.value === after.value &&
+    before.onChange === after.onChange &&
+    before.options.length === after.options.length &&
+    before.options.every((name, row) => name === after.options[row]),
+);
